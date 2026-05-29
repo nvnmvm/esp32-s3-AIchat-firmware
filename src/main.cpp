@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include <ctype.h>
+#include <string.h>
 
 #include "config.h"
 
@@ -10,6 +11,43 @@ WebSocketsClient webSocket;
 static unsigned long lastHelloAt = 0;
 static unsigned long helloCounter = 0;
 static unsigned long lastWifiAttemptAt = 0;
+
+bool isPlaceholder(const char *value) {
+  return strstr(value, "YOUR_") != nullptr ||
+         strstr(value, "CHANGE_ME") != nullptr ||
+         strlen(value) == 0;
+}
+
+bool validateConfig() {
+  bool ok = true;
+
+  if (isPlaceholder(WIFI_SSID)) {
+    Serial.println("Config error: WIFI_SSID is not configured.");
+    ok = false;
+  }
+
+  if (isPlaceholder(WIFI_PASSWORD)) {
+    Serial.println("Config error: WIFI_PASSWORD is not configured.");
+    ok = false;
+  }
+
+  if (isPlaceholder(WS_HOST)) {
+    Serial.println("Config error: WS_HOST is not configured.");
+    ok = false;
+  }
+
+  if (isPlaceholder(WS_TOKEN)) {
+    Serial.println("Config error: WS_TOKEN is not configured.");
+    ok = false;
+  }
+
+  if (WS_PORT == 0) {
+    Serial.println("Config error: WS_PORT cannot be 0.");
+    ok = false;
+  }
+
+  return ok;
+}
 
 String urlEncode(const char *value) {
   const char *hex = "0123456789ABCDEF";
@@ -139,6 +177,13 @@ void setup() {
   Serial.println();
   Serial.println("ESP32-S3 AI voice phase 1 WebSocket echo test");
   Serial.printf("Device ID: %s\n", DEVICE_ID);
+
+  if (!validateConfig()) {
+    Serial.println("Fix include/config.h, then flash again.");
+    while (true) {
+      delay(1000);
+    }
+  }
 
   connectWifi();
   setupWebSocket();

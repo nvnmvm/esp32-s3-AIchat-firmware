@@ -23,5 +23,8 @@ jobs:
       - name: Install PlatformIO
         run: python -m pip install --upgrade pip platformio
 
+      - name: Prepare example config
+        run: cp include/config.example.h include/config.h
+
       - name: Build firmware
         run: pio run

@@ -29,7 +29,7 @@ https://github.com/nvnmvm/esp32-s3-AIchat.git
 - WebSocket 端口，默认 `8000`
 - WebSocket 令牌 `WS_TOKEN`
 
-这些值需要填入本固件项目的 `include/config.h`。
+这些值需要填入本固件项目的本地配置文件 `include/config.h`。
 
 ## 克隆固件项目
 
@@ -50,7 +50,19 @@ cd esp32-s3-AIchat-firmware
 
 ## 修改配置
 
-打开：
+先复制配置模板：
+
+```bash
+cp include/config.example.h include/config.h
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item include/config.example.h include/config.h
+```
+
+然后打开：
 
 ```text
 include/config.h
@@ -65,8 +77,6 @@ include/config.h
 #define WS_HOST "你的VPS公网IP或域名"
 #define WS_PORT 8000
 #define WS_TOKEN "云端部署时生成或自定义的WebSocket令牌"
-
-#define AI_API_KEY "你的AI API Key"
 ```
 
 说明：
@@ -74,9 +84,12 @@ include/config.h
 - `WIFI_SSID`：本地 WiFi 名称。
 - `WIFI_PASSWORD`：本地 WiFi 密码。
 - `WS_HOST`：云端 VPS 公网 IP 或域名，不要带 `ws://`。
-- `WS_PORT`：云端 WebSocket 端口，默认 `8000`。
+- `WS_PORT`：云端 WebSocket 端口，默认 `8000`，如果云端部署时改了端口，这里也要同步修改。
 - `WS_TOKEN`：云端部署时生成或自定义的 WebSocket 令牌，必须和云端 `.env` 里的 `WS_TOKEN` 一致。
-- `AI_API_KEY`：阶段一暂时不使用，只是提前保留给后续 AI 对话阶段。
+
+注意：`include/config.h` 已经加入 `.gitignore`，只在你本地使用，不提交到 GitHub。仓库里只保留 `include/config.example.h` 模板。
+
+AI API Key 只应该放在云端 `.env` 里，不应该写进 ESP32 固件。
 
 ## 一键烧录
 
@@ -121,6 +134,7 @@ WebSocket text received (... bytes): hello from esp32 ...
 本固件阶段一保持功能简单，但已经加入基础自检：
 
 - 开机检查 `WIFI_SSID`、`WIFI_PASSWORD`、`WS_HOST`、`WS_TOKEN` 是否仍是占位值。
+- `include/config.h` 作为本地私有配置，不提交到 GitHub。
 - 配置错误时停止继续联网，并在串口打印明确提示。
 - WebSocket 自动重连和心跳保持开启，方便长时间测试。
 - `.github/workflows/ci.yml`：后续推送到 GitHub 后自动执行 PlatformIO 编译检查。
@@ -168,16 +182,17 @@ docs/maturity-roadmap.md
 计划按阶段推进：
 
 - `phase-1`：WebSocket 通信打通，只做 echo 测试。
-- `phase-2`：接入音频采集、上传和云端接收。
-- `phase-3`：接入 ASR、AI 对话、TTS 和语音播放。
+- `phase-2`：音频采集上传，云端保存和识别测试。
+- `phase-3`：ASR、LLM、TTS 和 ESP32 播放闭环。
+- `phase-4`：流式优化、稳定性和工程化增强。
 
 ## GitHub 版本管理方式
 
 后续每完成一个阶段，会按下面方式管理版本：
 
 - `main` 分支：始终保存当前最新可用版本。
-- `phase-1`、`phase-2`、`phase-3` 分支：用于对应阶段开发和修复。
-- `v1.0.0-phase1`、`v2.0.0-phase2`、`v3.0.0-phase3` 标签：用于固定每个阶段完成时的代码。
+- `phase-1`、`phase-2`、`phase-3`、`phase-4` 分支：用于对应阶段开发和修复。
+- `v1.0.0-phase1`、`v2.0.0-phase2`、`v3.0.0-phase3`、`v4.0.0-phase4` 标签：用于固定每个阶段完成时的代码。
 - GitHub Release：每个标签会发布一个 Release，说明本阶段功能、烧录方式、云端配套版本和注意事项。
 - README：每个阶段完成时都会同步更新 README；Git tag 会保存当时的 README，所以以后可以回看每个阶段对应的说明。
 

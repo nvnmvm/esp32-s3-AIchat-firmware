@@ -27,7 +27,6 @@ Edit `include/config.h`:
 Install PlatformIO first, then run:
 
 ```powershell
-cd esp32-s3-firmware
 .\scripts\flash.ps1
 ```
 

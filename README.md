@@ -114,6 +114,23 @@ WebSocket text received (... bytes): hello from esp32 ...
 
 如果看到 `Send skipped: WebSocket is not connected`，说明 WebSocket 还没有连上，需要检查 VPS IP、端口、防火墙和 `WS_TOKEN`。
 
+如果串口提示 `Config error`，说明 `include/config.h` 里还有占位值没有改。先修改 WiFi、VPS 地址和 `WS_TOKEN`，再重新烧录。
+
+## 工程化说明
+
+本固件阶段一保持功能简单，但已经加入基础自检：
+
+- 开机检查 `WIFI_SSID`、`WIFI_PASSWORD`、`WS_HOST`、`WS_TOKEN` 是否仍是占位值。
+- 配置错误时停止继续联网，并在串口打印明确提示。
+- WebSocket 自动重连和心跳保持开启，方便长时间测试。
+- `.github/workflows/ci.yml`：后续推送到 GitHub 后自动执行 PlatformIO 编译检查。
+
+更完整的固件成熟度路线图见：
+
+```text
+docs/maturity-roadmap.md
+```
+
 ## 常见问题
 
 ### WiFi 连不上

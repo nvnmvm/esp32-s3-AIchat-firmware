@@ -50,19 +50,29 @@ cd esp32-s3-AIchat-firmware
 
 ## 修改配置
 
-先复制配置模板：
+不要直接修改 `include/config.example.h`。它只是模板文件，用来保存在 GitHub 上给大家参考。
 
-```bash
-cp include/config.example.h include/config.h
-```
+第一次使用时，先运行初始化脚本生成本地配置文件。
 
 Windows PowerShell：
 
 ```powershell
-Copy-Item include/config.example.h include/config.h
+.\scripts\init-config.ps1
 ```
 
-然后打开：
+Linux / macOS：
+
+```bash
+bash scripts/init-config.sh
+```
+
+脚本会复制：
+
+```text
+include/config.example.h -> include/config.h
+```
+
+生成后只修改这个文件：
 
 ```text
 include/config.h
@@ -73,10 +83,9 @@ include/config.h
 ```c
 #define WIFI_SSID "你的WiFi名称"
 #define WIFI_PASSWORD "你的WiFi密码"
-
 #define WS_HOST "你的VPS公网IP或域名"
 #define WS_PORT 8000
-#define WS_TOKEN "云端部署时生成或自定义的WebSocket令牌"
+#define WS_TOKEN "云端生成的WebSocket令牌"
 ```
 
 说明：
@@ -87,7 +96,7 @@ include/config.h
 - `WS_PORT`：云端 WebSocket 端口，默认 `8000`，如果云端部署时改了端口，这里也要同步修改。
 - `WS_TOKEN`：云端部署时生成或自定义的 WebSocket 令牌，必须和云端 `.env` 里的 `WS_TOKEN` 一致。
 
-注意：`include/config.h` 已经加入 `.gitignore`，只在你本地使用，不提交到 GitHub。仓库里只保留 `include/config.example.h` 模板。
+注意：`include/config.h` 已经加入 `.gitignore`，只在你本地使用，不会提交到 GitHub。仓库里只保留 `include/config.example.h` 模板。
 
 AI API Key 只应该放在云端 `.env` 里，不应该写进 ESP32 固件。
 
@@ -105,6 +114,19 @@ Windows PowerShell：
 pio run -t upload
 pio device monitor
 ```
+
+如果你第一次直接运行烧录脚本，脚本也会自动生成 `include/config.h`，然后停止烧录并提醒你先填写 WiFi、服务器地址和 `WS_TOKEN`。
+
+如果 `include/config.h` 里还有下面这些占位值，烧录脚本也会停止：
+
+```text
+YOUR_WIFI_SSID
+YOUR_WIFI_PASSWORD
+YOUR_VPS_IP_OR_DOMAIN
+CHANGE_ME_TO_THE_CLOUD_TOKEN
+```
+
+这是为了避免新手在配置没填好时直接烧录，导致设备一直连不上。
 
 ## 手动烧录
 

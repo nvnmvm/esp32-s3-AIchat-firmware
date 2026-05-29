@@ -5,7 +5,8 @@
 ## 当前已经具备
 
 - 所有用户配置集中在本地 `include/config.h`，仓库只提交 `include/config.example.h`。
-- `scripts/init-config.ps1` 和 `scripts/init-config.sh` 会自动从模板生成本地配置文件，避免新手误改模板。
+- Release 解压后，推荐手动复制 `include/config.example.h` 为 `include/config.h`，然后只修改 `include/config.h`。
+- `scripts/init-config.ps1` 和 `scripts/init-config.sh` 也可以自动从模板生成本地配置文件，避免新手误改模板。
 - 烧录脚本会在缺少 `include/config.h` 时自动生成文件并停止烧录，提醒用户先填写配置。
 - 烧录脚本会检查常见占位值，配置未填好时不会继续执行上传。
 - 开机检查 WiFi、VPS 地址和 WebSocket 令牌是否仍是占位值。

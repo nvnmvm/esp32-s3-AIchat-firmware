@@ -52,27 +52,27 @@ cd esp32-s3-AIchat-firmware
 
 不要直接修改 `include/config.example.h`。它只是模板文件，用来保存在 GitHub 上给大家参考。
 
-第一次使用时，先运行初始化脚本生成本地配置文件。
+第一次使用时，推荐手动复制一份本地配置文件。
 
 Windows PowerShell：
 
 ```powershell
-.\scripts\init-config.ps1
+Copy-Item include/config.example.h include/config.h
 ```
 
 Linux / macOS：
 
 ```bash
-bash scripts/init-config.sh
+cp include/config.example.h include/config.h
 ```
 
-脚本会复制：
+复制关系是：
 
 ```text
 include/config.example.h -> include/config.h
 ```
 
-生成后只修改这个文件：
+复制完成后，只修改这个文件：
 
 ```text
 include/config.h
@@ -99,6 +99,20 @@ include/config.h
 注意：`include/config.h` 已经加入 `.gitignore`，只在你本地使用，不会提交到 GitHub。仓库里只保留 `include/config.example.h` 模板。
 
 AI API Key 只应该放在云端 `.env` 里，不应该写进 ESP32 固件。
+
+如果你不想手动复制，也可以运行初始化脚本自动生成 `include/config.h`。
+
+Windows PowerShell：
+
+```powershell
+.\scripts\init-config.ps1
+```
+
+Linux / macOS：
+
+```bash
+bash scripts/init-config.sh
+```
 
 ## 一键烧录
 

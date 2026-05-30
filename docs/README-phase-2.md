@@ -55,7 +55,7 @@ ASRPRO 通过 UART0 9600 波特率发送 ASCII 命令：
 
 ## 配套云端
 
-云端必须使用同名版本：`v2.0.0-phase2`。
+云端必须使用配套版本：`v2.0.1-phase2`。
 
 VPS 测试前先清理阶段一旧部署：
 
@@ -67,6 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 
 - SH1106 OLED 正常显示状态。
 - ASRPRO 发出 `WAKE` 后固件进入录音。
+- 云端 `state=recording` 不会覆盖 `听取中`，`state=idle` 会回到上海时间。
 - 云端日志能看到 PCM 音频上传。
 - OLED 显示云端返回的回答文本。
 - MAX98357A 能播放云端返回的测试音频。

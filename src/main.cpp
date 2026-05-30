@@ -351,10 +351,23 @@ void handleCloudJson(const char *payload, size_t length) {
 
   const char *type = doc["type"] | "";
   const char *text = doc["text"] | "";
+  const char *cloudState = doc["state"] | "";
   Serial.printf("Cloud JSON type=%s text=%s\n", type, text);
 
   if (strcmp(type, "status") == 0) {
-    if (state == DeviceState::Processing || state == DeviceState::Recording) {
+    if (strcmp(cloudState, "recording") == 0) {
+      state = DeviceState::Recording;
+      showScreen("听取中", text);
+    } else if (strcmp(cloudState, "asr") == 0 || strcmp(cloudState, "thinking") == 0) {
+      state = DeviceState::Processing;
+      showScreen("思考中", text);
+    } else if (strcmp(cloudState, "idle") == 0) {
+      expectingAudio = false;
+      state = DeviceState::Idle;
+      showShanghaiTime();
+    } else if (state == DeviceState::Recording) {
+      showScreen("听取中", text);
+    } else if (state == DeviceState::Processing) {
       showScreen("思考中", text);
     } else {
       showScreen("状态", text);

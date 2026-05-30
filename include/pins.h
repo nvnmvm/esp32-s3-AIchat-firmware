@@ -1,6 +1,6 @@
 #pragma once
 
-// 0.96 inch SSD1306 OLED, I2C.
+// 0.96 inch SH1106 OLED, U8g2 software I2C.
 #define PIN_OLED_SDA 8
 #define PIN_OLED_SCL 9
 #define OLED_I2C_ADDR 0x3C

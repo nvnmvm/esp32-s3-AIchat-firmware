@@ -17,8 +17,7 @@
 // Audio protocol: PCM signed 16-bit little-endian, 16 kHz, mono.
 #define AUDIO_SAMPLE_RATE 16000
 #define AUDIO_CHUNK_MS 40
-#define RECORD_START_DELAY_MS 650
 #define RECORD_MAX_MS 8000
 
-// OLED can display ASCII directly. Chinese font rendering is a later step.
+// OLED: SH1106, U8g2, software I2C, 0x3C, SDA GPIO8, SCL GPIO9.
 #define OLED_ENABLED true

@@ -2,12 +2,11 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebSocketsClient.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <U8g2lib.h>
 #include <ctype.h>
 #include <driver/i2s.h>
 #include <string.h>
+#include <time.h>
 
 #include "../include/config.h"
 #include "../include/pins.h"
@@ -18,11 +17,10 @@
 
 WebSocketsClient webSocket;
 HardwareSerial AsrSerial(1);
-Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+U8G2_SH1106_128X64_NONAME_F_SW_I2C display(U8G2_R0, PIN_OLED_SCL, PIN_OLED_SDA, U8X8_PIN_NONE);
 
 enum class DeviceState {
   Idle,
-  WakeDelay,
   Recording,
   Processing,
   Playing,
@@ -33,10 +31,13 @@ static bool websocketConnected = false;
 static bool displayReady = false;
 static bool expectingAudio = false;
 static unsigned long lastWifiAttemptAt = 0;
-static unsigned long wakeAt = 0;
 static unsigned long recordingStartedAt = 0;
+static unsigned long lastClockDisplayAt = 0;
 static String asrLine;
 
+static const char *NTP_SERVER_1 = "ntp.aliyun.com";
+static const char *NTP_SERVER_2 = "pool.ntp.org";
+static const char *SHANGHAI_TZ = "CST-8";
 static const size_t AUDIO_CHUNK_BYTES = (AUDIO_SAMPLE_RATE * 2 * AUDIO_CHUNK_MS) / 1000;
 static uint8_t audioChunk[AUDIO_CHUNK_BYTES];
 
@@ -104,6 +105,22 @@ String websocketPath() {
   return path;
 }
 
+void drawDisplayLine(uint8_t y, const String &text) {
+  String clipped = text;
+  clipped.replace("\r", " ");
+  clipped.replace("\n", " ");
+
+  while (clipped.length() > 0 && display.getUTF8Width(clipped.c_str()) > OLED_WIDTH) {
+    int lastByte = clipped.length() - 1;
+    while (lastByte > 0 && (static_cast<uint8_t>(clipped[lastByte]) & 0xC0) == 0x80) {
+      lastByte--;
+    }
+    clipped.remove(lastByte);
+  }
+
+  display.drawUTF8(0, y, clipped.c_str());
+}
+
 void showScreen(const String &line1, const String &line2 = "", const String &line3 = "") {
   Serial.printf("[screen] %s | %s | %s\n", line1.c_str(), line2.c_str(), line3.c_str());
 
@@ -111,20 +128,32 @@ void showScreen(const String &line1, const String &line2 = "", const String &lin
     return;
   }
 
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(line1.substring(0, 21));
+  display.clearBuffer();
+  display.setFont(u8g2_font_wqy12_t_gb2312);
+  drawDisplayLine(13, line1);
   if (line2.length() > 0) {
-    display.setCursor(0, 18);
-    display.println(line2.substring(0, 21));
+    drawDisplayLine(34, line2);
   }
   if (line3.length() > 0) {
-    display.setCursor(0, 36);
-    display.println(line3.substring(0, 21));
+    drawDisplayLine(55, line3);
   }
-  display.display();
+  display.sendBuffer();
+}
+
+String shanghaiTimeText() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 50)) {
+    return "上海时间同步中";
+  }
+
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  return String("上海时间 ") + buffer;
+}
+
+void showShanghaiTime() {
+  lastClockDisplayAt = millis();
+  showScreen("等待唤醒", shanghaiTimeText(), "说 小一小一");
 }
 
 void sendJson(const char *type) {
@@ -140,14 +169,16 @@ void setupDisplay() {
     return;
   }
 
-  Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
-  displayReady = display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDR);
+  display.setI2CAddress(OLED_I2C_ADDR << 1);
+  displayReady = display.begin();
   if (!displayReady) {
-    Serial.println("OLED init failed. Check SDA/SCL/address.");
+    Serial.println("OLED init failed. Expected SH1106 U8g2 SW I2C address=0x3C SDA=GPIO8 SCL=GPIO9.");
     return;
   }
 
-  showScreen("Phase 2", "Booting...");
+  display.setPowerSave(0);
+  display.setContrast(180);
+  showScreen("阶段二", "屏幕初始化完成", "SH1106 0x3C");
 }
 
 void setupI2sMic() {
@@ -223,12 +254,32 @@ void setupI2sSpeaker() {
   i2s_zero_dma_buffer(I2S_NUM_1);
 }
 
+void syncShanghaiTime() {
+  configTzTime(SHANGHAI_TZ, NTP_SERVER_1, NTP_SERVER_2);
+
+  struct tm timeinfo;
+  for (int attempt = 0; attempt < 20; attempt++) {
+    if (getLocalTime(&timeinfo, 500)) {
+      Serial.printf("Shanghai time synced: %04d-%02d-%02d %02d:%02d:%02d\n",
+                    timeinfo.tm_year + 1900,
+                    timeinfo.tm_mon + 1,
+                    timeinfo.tm_mday,
+                    timeinfo.tm_hour,
+                    timeinfo.tm_min,
+                    timeinfo.tm_sec);
+      return;
+    }
+  }
+
+  Serial.println("Shanghai time sync timeout; idle screen will show sync status until SNTP updates.");
+}
+
 void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) {
     return;
   }
 
-  showScreen("WiFi", "Connecting...");
+  showScreen("网络连接中", WIFI_SSID);
   Serial.printf("Connecting WiFi SSID=%s\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -244,22 +295,28 @@ void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("WiFi connected, IP=");
     Serial.println(WiFi.localIP());
-    showScreen("WiFi connected", WiFi.localIP().toString());
+    showScreen("WiFi连接成功", WiFi.localIP().toString());
+    delay(1200);
+    showScreen("同步上海时间", "请稍候");
+    syncShanghaiTime();
+    showShanghaiTime();
   } else {
     Serial.println("WiFi connect timeout; will retry");
-    showScreen("WiFi timeout", "Retrying...");
+    showScreen("网络连接失败", "正在重试");
   }
 }
 
-void beginWakeDelay() {
+void startRecordingNow() {
   if (!websocketConnected) {
-    showScreen("Cloud offline", "Wake ignored");
+    showScreen("云端未连接", "无法录音");
     return;
   }
 
-  state = DeviceState::WakeDelay;
-  wakeAt = millis();
-  showScreen("Wake", "Get ready...");
+  i2s_zero_dma_buffer(I2S_NUM_0);
+  sendJson("start_record");
+  recordingStartedAt = millis();
+  state = DeviceState::Recording;
+  showScreen("听取中", "请说话");
 }
 
 void cancelTurn(const char *reason) {
@@ -268,7 +325,9 @@ void cancelTurn(const char *reason) {
   state = DeviceState::Idle;
   i2s_zero_dma_buffer(I2S_NUM_0);
   i2s_zero_dma_buffer(I2S_NUM_1);
-  showScreen("Cancelled", reason, "Waiting wake");
+  showScreen("已取消", reason);
+  delay(800);
+  showShanghaiTime();
 }
 
 void finishRecording(const char *reason) {
@@ -276,9 +335,10 @@ void finishRecording(const char *reason) {
     return;
   }
 
+  Serial.printf("Finish recording: %s\n", reason);
   sendJson("finish_record");
   state = DeviceState::Processing;
-  showScreen("Uploaded", reason, "Processing...");
+  showScreen("思考中", "已上传云端");
 }
 
 void handleCloudJson(const char *payload, size_t length) {
@@ -294,25 +354,30 @@ void handleCloudJson(const char *payload, size_t length) {
   Serial.printf("Cloud JSON type=%s text=%s\n", type, text);
 
   if (strcmp(type, "status") == 0) {
-    showScreen("Status", text);
+    if (state == DeviceState::Processing || state == DeviceState::Recording) {
+      showScreen("思考中", text);
+    } else {
+      showScreen("状态", text);
+    }
   } else if (strcmp(type, "asr_text") == 0) {
-    showScreen("You said", text);
+    state = DeviceState::Processing;
+    showScreen("思考中", text);
   } else if (strcmp(type, "answer_text") == 0) {
     state = DeviceState::Processing;
-    showScreen("Answer", text);
+    showScreen("回答中", text);
   } else if (strcmp(type, "audio_start") == 0) {
     expectingAudio = true;
     state = DeviceState::Playing;
     i2s_zero_dma_buffer(I2S_NUM_1);
-    showScreen("Playing", "MAX98357A");
+    showScreen("回答中", "正在播放");
   } else if (strcmp(type, "audio_end") == 0) {
     expectingAudio = false;
     state = DeviceState::Idle;
-    showScreen("Idle", "Waiting wake");
+    showShanghaiTime();
   } else if (strcmp(type, "error") == 0) {
     expectingAudio = false;
     state = DeviceState::Idle;
-    showScreen("Cloud error", text);
+    showScreen("云端错误", text);
   }
 }
 
@@ -348,12 +413,12 @@ void setupWebSocket() {
         expectingAudio = false;
         state = DeviceState::Idle;
         Serial.println("WebSocket disconnected");
-        showScreen("Cloud offline", "Reconnecting...");
+        showScreen("云端断开", "正在重连");
         break;
       case WStype_CONNECTED:
         websocketConnected = true;
         Serial.printf("WebSocket connected: %s\n", payload);
-        showScreen("Cloud connected", "Waiting wake");
+        showShanghaiTime();
         break;
       case WStype_TEXT:
         handleCloudJson(reinterpret_cast<const char *>(payload), length);
@@ -384,15 +449,17 @@ void processAsrCommand(const String &command) {
 
   if (command == "WAKE") {
     if (state == DeviceState::Idle) {
-      beginWakeDelay();
+      startRecordingNow();
     }
   } else if (command == "CANCEL") {
-    cancelTurn("ASR cancel");
+    cancelTurn("语音取消");
   } else if (command == "STOP") {
     sendJson("stop");
     expectingAudio = false;
     state = DeviceState::Idle;
-    showScreen("Stopped", "Waiting wake");
+    showScreen("已停止");
+    delay(800);
+    showShanghaiTime();
   }
 }
 
@@ -419,20 +486,16 @@ void pollAsrPro() {
   }
 }
 
-void startRecordingIfDue() {
-  if (state != DeviceState::WakeDelay) {
+void refreshClockIfIdle() {
+  if (state != DeviceState::Idle || !websocketConnected || !displayReady) {
     return;
   }
 
-  if (millis() - wakeAt < RECORD_START_DELAY_MS) {
+  if (millis() - lastClockDisplayAt < 1000) {
     return;
   }
 
-  i2s_zero_dma_buffer(I2S_NUM_0);
-  sendJson("start_record");
-  recordingStartedAt = millis();
-  state = DeviceState::Recording;
-  showScreen("Recording", "Speak now");
+  showShanghaiTime();
 }
 
 void streamMicIfRecording() {
@@ -490,6 +553,6 @@ void loop() {
 
   webSocket.loop();
   pollAsrPro();
-  startRecordingIfDue();
+  refreshClockIfIdle();
   streamMicIfRecording();
 }

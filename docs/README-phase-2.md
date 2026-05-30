@@ -1,6 +1,6 @@
 # 阶段二 README：语音和屏幕双输出闭环版
 
-阶段二固件验证 ASRPRO 唤醒、I2S 麦克风上传、SH1106 OLED 显示回答、MAX98357A 播放云端返回 PCM 音频。
+阶段二固件验证 ASRPRO 唤醒、I2S 麦克风上传、SH1106 OLED 显示回答、MAX98357A 播放云端返回 PCM 音频，目标是完成稳定的 AI 对话核心闭环。阶段三再实现实时流式对话、音频环形缓冲和流式字幕。
 
 ## 硬件接线
 
@@ -49,13 +49,26 @@ ASRPRO 通过 UART0 9600 波特率发送 ASCII 命令：
 5. 向云端发送 `{"type":"start_record"}`。
 6. 分块上传 16 kHz、16 bit、mono PCM。
 7. 上传结束和等待云端回答期间，OLED 显示 `思考中`。
-8. 云端返回 `answer_text` 或开始播放音频后，OLED 显示 `回答中`。
-9. 云端返回 `audio_start` 和 PCM 音频后，ESP32-S3 通过 I2S 输出到 MAX98357A。
-10. 收到 `audio_end` 后保留回答约 8 秒，再回到空闲并继续显示上海时间。
+8. 云端返回 `answer_text` 后，OLED 显示 `回答中`。
+9. 短暂停留后，OLED 只显示 AI 回答文字，并从右向左横向滚动。
+10. 云端返回 `audio_start` 和 PCM 音频后，ESP32-S3 通过 I2S 输出到 MAX98357A，屏幕继续滚动回答文字，不再显示“正在播放”占用正文区域。
+11. 收到 `audio_end` 时只标记音频结束。
+12. 回答文字滚动结束且音频播放结束后，OLED 显示 `回答完毕` 约 2 秒，再回到空闲并继续显示上海时间。
+
+OLED 显示由固件内部状态机统一刷新，WebSocket 事件只修改显示状态。这样可以避免 `asr_text`、`answer_text`、`audio_start`、`audio_end` 和云端 `status` 消息短时间连续到达时互相抢屏。
+
+回答滚动参数：
+
+```cpp
+DISPLAY_FRAME_MS = 40;      // 25 FPS
+SCROLL_SPEED_PX_PER_SEC = 35;
+ANSWER_INTRO_MS = 700;
+ANSWER_DONE_MS = 2000;
+```
 
 ## 配套云端
 
-云端必须使用同名版本：`v2.1.0-phase2-complete`。
+推荐使用云端阶段二最新版：[`v2.1.2-phase2-complete`](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.2-phase2-complete)。
 
 VPS 测试前先清理阶段一旧部署：
 
@@ -69,11 +82,15 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 - ASRPRO 发出 `WAKE` 后固件进入录音。
 - 云端 `state=recording` 不会覆盖 `听取中`，`state=idle` 会回到上海时间。
 - 没有喇叭时，OLED 也能显示识别结果和 AI 回答。
-- `audio_start` 不覆盖回答正文，`audio_end` 后保留回答约 8 秒。
+- `answer_text` 后先显示 `回答中`，随后只显示 AI 回答文字。
+- `audio_start` 不覆盖回答正文，不显示“正在播放”占用文字区域。
+- AI 回答文字从右向左横向滚动。
+- `audio_end` 只标记音频结束，必须等文字滚动也结束后才显示 `回答完毕`。
+- `回答完毕` 保留约 2 秒后回到上海时间等待唤醒。
 - 云端日志能看到 PCM 音频上传。
 - OLED 显示云端返回的回答文本。
 - MAX98357A 能播放云端返回的测试音频。
 - `CANCEL` 可以取消当前录音或播放。
 - `STOP` 可以回到空闲。
 
-当前 OLED 使用 U8g2 SH1106 软件 I2C，显示中文状态和短文本。
+当前 OLED 使用 U8g2 SH1106 软件 I2C，显示中文状态和回答滚动文本。

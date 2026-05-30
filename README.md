@@ -1,6 +1,6 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v2.1.0-phase2-complete`，阶段二完善版。
+当前版本：`v2.1.1-display-smooth`，阶段二显示闭环完善版。
 
 本仓库是 ESP32-S3 固件。阶段二使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的回答文本和 PCM 音频，实现 SH1106 OLED 显示与 MAX98357A 播放。
 
@@ -116,11 +116,13 @@ STOP
 | 空闲等待唤醒 | `等待唤醒`、`上海时间 HH:MM:SS`、`说 小一小一` |
 | ASRPRO 发出 `WAKE` | `听取中` |
 | 已上传音频并等待云端返回 | `思考中` |
-| 云端返回回答文本或音频播放中 | `回答中` |
+| 云端返回 `answer_text` | `回答中`，短暂停留后进入回答正文 |
+| 云端返回 `audio_start` 并播放音频 | 只显示 AI 回答文字，回答从右向左横向滚动 |
+| 回答文字滚动结束且收到 `audio_end` | `回答完毕`，保留约 2 秒后回到等待唤醒 |
 
-固件会按云端 `status.state` 精确切换屏幕状态：`recording` 保持 `听取中`，`asr` / `thinking` 显示 `思考中`，`idle` 回到上海时间，避免云端状态消息覆盖录音界面。
+固件会按云端 `status.state` 精确切换显示状态：`recording` 保持 `听取中`，`asr` / `thinking` 显示 `思考中`，`idle` 在非回答阶段才回到上海时间。OLED 刷新统一由固件显示状态机处理，WebSocket 事件只修改显示状态，避免识别结果、回答中、播放中、回答完成等页面互相抢屏。
 
-没有喇叭时也可以通过 OLED 验证闭环：固件会显示 `asr_text` 识别结果，收到 `answer_text` 后显示 AI 回答；`audio_start` 不再覆盖回答正文，`audio_end` 后会保留回答约 8 秒再回到上海时间。
+没有喇叭时也可以通过 OLED 验证闭环：固件会显示 `asr_text` 识别结果，收到 `answer_text` 后显示 `回答中`，随后滚动显示 AI 回答；`audio_start` 不再占用回答正文区域显示“正在播放”，`audio_end` 只标记音频已结束，必须等文字滚动也结束后才显示 `回答完毕`。
 
 ## 正常串口输出
 
@@ -136,8 +138,8 @@ Played audio chunk: ...
 
 ## 注意
 
-当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和短文本；阶段二重点是把语音上传、文本显示、音频播放闭环跑通。
+当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和回答文本，回答滚动刷新间隔为 40ms，约 25 FPS。阶段二重点是把唤醒、录音、云端 AI 回答、OLED 文本、MAX98357A 播放闭环跑通；阶段三再做音频环形缓冲、真正边收边播、ASR partial 字幕和 DeepSeek 流式文字同步。
 
 ## 配套云端
 
-请使用云端仓库同名版本：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.0-phase2-complete)。
+推荐使用云端仓库阶段二最新版：[v2.1.2-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.2-phase2-complete)。本固件仍使用阶段二 JSON + PCM WebSocket 协议，不需要云端做阶段三流式改造。

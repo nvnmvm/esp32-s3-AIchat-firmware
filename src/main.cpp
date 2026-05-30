@@ -26,21 +26,47 @@ enum class DeviceState {
   Playing,
 };
 
+enum class DisplayMode {
+  Idle,
+  Listening,
+  Thinking,
+  AsrResult,
+  AnswerIntro,
+  AnswerMarquee,
+  AnswerDone,
+  Error,
+  Notice,
+};
+
 static DeviceState state = DeviceState::Idle;
+static DisplayMode displayMode = DisplayMode::Notice;
 static bool websocketConnected = false;
 static bool displayReady = false;
 static bool expectingAudio = false;
+static bool displayDirty = true;
+static bool marqueeFinished = false;
+static bool answerAudioFinished = true;
 static unsigned long lastWifiAttemptAt = 0;
 static unsigned long recordingStartedAt = 0;
 static unsigned long lastClockDisplayAt = 0;
-static unsigned long answerHoldUntil = 0;
+static unsigned long lastDisplayFrameAt = 0;
+static unsigned long displayModeStartedAt = 0;
+static unsigned long marqueeStartAt = 0;
 static String asrLine;
+static String displayTitle;
+static String displayBody;
+static String displayFooter;
+static String marqueeText;
 static String lastAnswerText;
+static int marqueeTextWidth = 0;
 
 static const char *NTP_SERVER_1 = "ntp.aliyun.com";
 static const char *NTP_SERVER_2 = "pool.ntp.org";
 static const char *SHANGHAI_TZ = "CST-8";
-static const unsigned long ANSWER_HOLD_MS = 8000;
+static const unsigned long DISPLAY_FRAME_MS = 40;
+static const int SCROLL_SPEED_PX_PER_SEC = 35;
+static const unsigned long ANSWER_INTRO_MS = 700;
+static const unsigned long ANSWER_DONE_MS = 2000;
 static const size_t AUDIO_CHUNK_BYTES = (AUDIO_SAMPLE_RATE * 2 * AUDIO_CHUNK_MS) / 1000;
 static uint8_t audioChunk[AUDIO_CHUNK_BYTES];
 
@@ -165,15 +191,33 @@ String addEllipsisToFit(String line) {
   return line + "...";
 }
 
-void showScreen(const String &line1, const String &line2 = "", const String &line3 = "") {
-  Serial.printf("[screen] %s | %s | %s\n", line1.c_str(), line2.c_str(), line3.c_str());
+String cleanDisplayText(const String &text) {
+  String cleaned = text;
+  cleaned.replace("\r", " ");
+  cleaned.replace("\n", " ");
+  cleaned.trim();
+  return cleaned;
+}
 
-  if (!displayReady) {
-    return;
-  }
+void setDisplayMode(DisplayMode mode, const String &title = "", const String &body = "", const String &footer = "") {
+  displayMode = mode;
+  displayTitle = title;
+  displayBody = cleanDisplayText(body);
+  displayFooter = cleanDisplayText(footer);
+  displayModeStartedAt = millis();
+  displayDirty = true;
+  Serial.printf("[display] mode=%u title=%s body=%s footer=%s\n",
+                static_cast<unsigned>(mode),
+                displayTitle.c_str(),
+                displayBody.c_str(),
+                displayFooter.c_str());
+}
 
-  display.clearBuffer();
-  display.setFont(u8g2_font_wqy12_t_gb2312);
+void setNoticeScreen(const String &line1, const String &line2 = "", const String &line3 = "") {
+  setDisplayMode(DisplayMode::Notice, line1, line2, line3);
+}
+
+void renderThreeLineScreen(const String &line1, const String &line2 = "", const String &line3 = "") {
   drawDisplayLine(13, line1);
   if (line2.length() > 0) {
     drawDisplayLine(34, line2);
@@ -181,15 +225,9 @@ void showScreen(const String &line1, const String &line2 = "", const String &lin
   if (line3.length() > 0) {
     drawDisplayLine(55, line3);
   }
-  display.sendBuffer();
 }
 
-void showTextScreen(const String &title, const String &text, const String &footer = "") {
-  if (!displayReady) {
-    showScreen(title, text, footer);
-    return;
-  }
-
+void renderTextScreen(const String &title, const String &text, const String &footer = "") {
   String rest = text;
   rest.replace("\r", " ");
   rest.replace("\n", " ");
@@ -205,7 +243,7 @@ void showTextScreen(const String &title, const String &text, const String &foote
     line2 = addEllipsisToFit(line2);
   }
 
-  showScreen(title, line2, line3);
+  renderThreeLineScreen(title, line2, line3);
 }
 
 String shanghaiTimeText() {
@@ -219,9 +257,118 @@ String shanghaiTimeText() {
   return String("上海时间 ") + buffer;
 }
 
-void showShanghaiTime() {
-  lastClockDisplayAt = millis();
-  showScreen("等待唤醒", shanghaiTimeText(), "说 小一小一");
+void startAnswerMarquee(const String &text) {
+  String cleaned = cleanDisplayText(text);
+  if (cleaned.length() == 0) {
+    cleaned = "无回答内容";
+  }
+
+  lastAnswerText = cleaned;
+  marqueeText = cleaned;
+  marqueeStartAt = millis();
+  marqueeFinished = false;
+  displayMode = DisplayMode::AnswerMarquee;
+  displayTitle = "";
+  displayBody = cleaned;
+  displayFooter = "";
+  displayModeStartedAt = marqueeStartAt;
+  displayDirty = true;
+
+  if (displayReady) {
+    display.setFont(u8g2_font_wqy12_t_gb2312);
+    marqueeTextWidth = display.getUTF8Width(marqueeText.c_str());
+  } else {
+    marqueeTextWidth = 0;
+  }
+
+  Serial.printf("[display] answer marquee: %s\n", marqueeText.c_str());
+}
+
+void setIdleDisplay() {
+  setDisplayMode(DisplayMode::Idle);
+}
+
+void updateDisplay(bool force = false) {
+  if (!displayReady) {
+    return;
+  }
+
+  unsigned long now = millis();
+
+  if (displayMode == DisplayMode::AnswerIntro && now - displayModeStartedAt >= ANSWER_INTRO_MS) {
+    startAnswerMarquee(lastAnswerText);
+  }
+
+  if (displayMode == DisplayMode::AnswerMarquee) {
+    unsigned long elapsed = now - marqueeStartAt;
+    int x = OLED_WIDTH - static_cast<int>((elapsed * SCROLL_SPEED_PX_PER_SEC) / 1000);
+    if (x + marqueeTextWidth < 0) {
+      marqueeFinished = true;
+    }
+    if (marqueeFinished && answerAudioFinished) {
+      setDisplayMode(DisplayMode::AnswerDone, "回答完毕", lastAnswerText);
+    }
+  }
+
+  if (displayMode == DisplayMode::AnswerDone && now - displayModeStartedAt >= ANSWER_DONE_MS) {
+    state = DeviceState::Idle;
+    expectingAudio = false;
+    setIdleDisplay();
+  }
+
+  bool animated = displayMode == DisplayMode::AnswerMarquee;
+  bool clockDue = displayMode == DisplayMode::Idle && now - lastClockDisplayAt >= 1000;
+  if (!force && !displayDirty && !animated && !clockDue) {
+    return;
+  }
+
+  if (!force && animated && now - lastDisplayFrameAt < DISPLAY_FRAME_MS) {
+    return;
+  }
+
+  display.clearBuffer();
+  display.setFont(u8g2_font_wqy12_t_gb2312);
+
+  switch (displayMode) {
+    case DisplayMode::Idle:
+      lastClockDisplayAt = now;
+      renderThreeLineScreen("等待唤醒", shanghaiTimeText(), "说 小一小一");
+      break;
+    case DisplayMode::Listening:
+      renderThreeLineScreen("听取中", displayBody.length() > 0 ? displayBody : "请说话");
+      break;
+    case DisplayMode::Thinking:
+      renderThreeLineScreen("思考中", displayBody.length() > 0 ? displayBody : "已上传云端");
+      break;
+    case DisplayMode::AsrResult:
+      renderTextScreen("识别结果", displayBody);
+      break;
+    case DisplayMode::AnswerIntro:
+      renderTextScreen("回答中", displayBody);
+      break;
+    case DisplayMode::AnswerMarquee: {
+      unsigned long elapsed = now - marqueeStartAt;
+      int x = OLED_WIDTH - static_cast<int>((elapsed * SCROLL_SPEED_PX_PER_SEC) / 1000);
+      if (marqueeFinished && !answerAudioFinished) {
+        x = 0;
+      }
+      display.drawUTF8(x, 38, marqueeText.c_str());
+      break;
+    }
+    case DisplayMode::AnswerDone:
+      renderTextScreen("回答完毕", displayBody);
+      break;
+    case DisplayMode::Error:
+      renderTextScreen(displayTitle.length() > 0 ? displayTitle : "错误", displayBody);
+      break;
+    case DisplayMode::Notice:
+      renderThreeLineScreen(displayTitle, displayBody, displayFooter);
+      break;
+  }
+
+  display.sendBuffer();
+  displayDirty = false;
+  lastDisplayFrameAt = now;
 }
 
 void sendJson(const char *type) {
@@ -246,7 +393,8 @@ void setupDisplay() {
 
   display.setPowerSave(0);
   display.setContrast(180);
-  showScreen("阶段二", "屏幕初始化完成", "SH1106 0x3C");
+  setNoticeScreen("阶段二", "屏幕初始化完成", "SH1106 0x3C");
+  updateDisplay(true);
 }
 
 void setupI2sMic() {
@@ -347,7 +495,8 @@ void connectWifi() {
     return;
   }
 
-  showScreen("网络连接中", WIFI_SSID);
+  setNoticeScreen("网络连接中", WIFI_SSID);
+  updateDisplay(true);
   Serial.printf("Connecting WiFi SSID=%s\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -363,20 +512,24 @@ void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.print("WiFi connected, IP=");
     Serial.println(WiFi.localIP());
-    showScreen("WiFi连接成功", WiFi.localIP().toString());
+    setNoticeScreen("WiFi连接成功", WiFi.localIP().toString());
+    updateDisplay(true);
     delay(1200);
-    showScreen("同步上海时间", "请稍候");
+    setNoticeScreen("同步上海时间", "请稍候");
+    updateDisplay(true);
     syncShanghaiTime();
-    showShanghaiTime();
+    setIdleDisplay();
+    updateDisplay(true);
   } else {
     Serial.println("WiFi connect timeout; will retry");
-    showScreen("网络连接失败", "正在重试");
+    setNoticeScreen("网络连接失败", "正在重试");
+    updateDisplay(true);
   }
 }
 
 void startRecordingNow() {
   if (!websocketConnected) {
-    showScreen("云端未连接", "无法录音");
+    setDisplayMode(DisplayMode::Error, "云端未连接", "无法录音");
     return;
   }
 
@@ -384,18 +537,20 @@ void startRecordingNow() {
   sendJson("start_record");
   recordingStartedAt = millis();
   state = DeviceState::Recording;
-  showScreen("听取中", "请说话");
+  setDisplayMode(DisplayMode::Listening, "", "请说话");
 }
 
 void cancelTurn(const char *reason) {
   sendJson("cancel");
   expectingAudio = false;
+  answerAudioFinished = true;
   state = DeviceState::Idle;
   i2s_zero_dma_buffer(I2S_NUM_0);
   i2s_zero_dma_buffer(I2S_NUM_1);
-  showScreen("已取消", reason);
+  setNoticeScreen("已取消", reason);
+  updateDisplay(true);
   delay(800);
-  showShanghaiTime();
+  setIdleDisplay();
 }
 
 void finishRecording(const char *reason) {
@@ -406,7 +561,7 @@ void finishRecording(const char *reason) {
   Serial.printf("Finish recording: %s\n", reason);
   sendJson("finish_record");
   state = DeviceState::Processing;
-  showScreen("思考中", "已上传云端");
+  setDisplayMode(DisplayMode::Thinking, "", "已上传云端");
 }
 
 void handleCloudJson(const char *payload, size_t length) {
@@ -423,48 +578,56 @@ void handleCloudJson(const char *payload, size_t length) {
   Serial.printf("Cloud JSON type=%s text=%s\n", type, text);
 
   if (strcmp(type, "status") == 0) {
+    if (displayMode == DisplayMode::AnswerIntro ||
+        displayMode == DisplayMode::AnswerMarquee ||
+        displayMode == DisplayMode::AnswerDone) {
+      return;
+    }
+
     if (strcmp(cloudState, "recording") == 0) {
       state = DeviceState::Recording;
-      showScreen("听取中", text);
+      setDisplayMode(DisplayMode::Listening, "", text);
     } else if (strcmp(cloudState, "asr") == 0 || strcmp(cloudState, "thinking") == 0) {
       state = DeviceState::Processing;
-      showScreen("思考中", text);
+      setDisplayMode(DisplayMode::Thinking, "", text);
     } else if (strcmp(cloudState, "idle") == 0) {
-      if (answerHoldUntil > millis()) {
-        showTextScreen("回答完成", lastAnswerText);
-        return;
-      }
       expectingAudio = false;
       state = DeviceState::Idle;
-      showShanghaiTime();
+      setIdleDisplay();
     } else if (state == DeviceState::Recording) {
-      showScreen("听取中", text);
+      setDisplayMode(DisplayMode::Listening, "", text);
     } else if (state == DeviceState::Processing) {
-      showScreen("思考中", text);
+      setDisplayMode(DisplayMode::Thinking, "", text);
     } else {
-      showScreen("状态", text);
+      setNoticeScreen("状态", text);
     }
   } else if (strcmp(type, "asr_text") == 0) {
     state = DeviceState::Processing;
-    showTextScreen("识别结果", text);
+    setDisplayMode(DisplayMode::AsrResult, "", text);
   } else if (strcmp(type, "answer_text") == 0) {
     state = DeviceState::Processing;
     lastAnswerText = text;
-    showTextScreen("回答中", lastAnswerText);
+    answerAudioFinished = true;
+    marqueeFinished = false;
+    setDisplayMode(DisplayMode::AnswerIntro, "回答中", lastAnswerText);
   } else if (strcmp(type, "audio_start") == 0) {
     expectingAudio = true;
+    answerAudioFinished = false;
     state = DeviceState::Playing;
     i2s_zero_dma_buffer(I2S_NUM_1);
-    showTextScreen("回答中", lastAnswerText, "正在播放");
+    startAnswerMarquee(lastAnswerText);
   } else if (strcmp(type, "audio_end") == 0) {
     expectingAudio = false;
+    answerAudioFinished = true;
     state = DeviceState::Playing;
-    answerHoldUntil = millis() + ANSWER_HOLD_MS;
-    showTextScreen("回答完成", lastAnswerText);
+    if (marqueeFinished) {
+      setDisplayMode(DisplayMode::AnswerDone, "回答完毕", lastAnswerText);
+    }
   } else if (strcmp(type, "error") == 0) {
     expectingAudio = false;
+    answerAudioFinished = true;
     state = DeviceState::Idle;
-    showTextScreen("云端错误", text);
+    setDisplayMode(DisplayMode::Error, "云端错误", text);
   }
 }
 
@@ -498,14 +661,15 @@ void setupWebSocket() {
       case WStype_DISCONNECTED:
         websocketConnected = false;
         expectingAudio = false;
+        answerAudioFinished = true;
         state = DeviceState::Idle;
         Serial.println("WebSocket disconnected");
-        showScreen("云端断开", "正在重连");
+        setNoticeScreen("云端断开", "正在重连");
         break;
       case WStype_CONNECTED:
         websocketConnected = true;
         Serial.printf("WebSocket connected: %s\n", payload);
-        showShanghaiTime();
+        setIdleDisplay();
         break;
       case WStype_TEXT:
         handleCloudJson(reinterpret_cast<const char *>(payload), length);
@@ -543,10 +707,12 @@ void processAsrCommand(const String &command) {
   } else if (command == "STOP") {
     sendJson("stop");
     expectingAudio = false;
+    answerAudioFinished = true;
     state = DeviceState::Idle;
-    showScreen("已停止");
+    setNoticeScreen("已停止");
+    updateDisplay(true);
     delay(800);
-    showShanghaiTime();
+    setIdleDisplay();
   }
 }
 
@@ -571,32 +737,6 @@ void pollAsrPro() {
       asrLine += c;
     }
   }
-}
-
-void refreshClockIfIdle() {
-  if (state != DeviceState::Idle || !websocketConnected || !displayReady) {
-    return;
-  }
-
-  if (millis() - lastClockDisplayAt < 1000) {
-    return;
-  }
-
-  showShanghaiTime();
-}
-
-void finishAnswerHoldIfDue() {
-  if (state != DeviceState::Playing || expectingAudio || answerHoldUntil == 0) {
-    return;
-  }
-
-  if (millis() < answerHoldUntil) {
-    return;
-  }
-
-  answerHoldUntil = 0;
-  state = DeviceState::Idle;
-  showShanghaiTime();
 }
 
 void streamMicIfRecording() {
@@ -648,13 +788,13 @@ void loop() {
       lastWifiAttemptAt = millis();
       connectWifi();
     }
+    updateDisplay();
     delay(50);
     return;
   }
 
   webSocket.loop();
   pollAsrPro();
-  finishAnswerHoldIfDue();
-  refreshClockIfIdle();
   streamMicIfRecording();
+  updateDisplay();
 }

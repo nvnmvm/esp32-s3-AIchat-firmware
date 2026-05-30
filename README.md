@@ -1,6 +1,6 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v2.1.1-display-smooth`，阶段二显示闭环完善版。
+当前版本：`v2.1.2-display-stable`，阶段二稳定显示闭环版。
 
 本仓库是 ESP32-S3 固件。阶段二使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的回答文本和 PCM 音频，实现 SH1106 OLED 显示与 MAX98357A 播放。
 
@@ -124,6 +124,8 @@ STOP
 
 没有喇叭时也可以通过 OLED 验证闭环：固件会显示 `asr_text` 识别结果，收到 `answer_text` 后显示 `回答中`，随后滚动显示 AI 回答；`audio_start` 不再占用回答正文区域显示“正在播放”，`audio_end` 只标记音频已结束，必须等文字滚动也结束后才显示 `回答完毕`。
 
+固件会忽略旧云端可能发出的 `收到音频，但当前没有 start_record。` 无害尾包错误，避免录音结束后的残余 PCM 包把 OLED 固定在 `云端错误`。其他普通错误会显示约 2 秒，然后自动回到等待唤醒。
+
 ## 正常串口输出
 
 ```text
@@ -142,4 +144,4 @@ Played audio chunk: ...
 
 ## 配套云端
 
-推荐使用云端仓库阶段二最新版：[v2.1.2-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.2-phase2-complete)。本固件仍使用阶段二 JSON + PCM WebSocket 协议，不需要云端做阶段三流式改造。
+推荐使用云端仓库阶段二最新版：[v2.1.3-phase2-stable](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.3-phase2-stable)。本固件仍使用阶段二 JSON + PCM WebSocket 协议，不需要云端做阶段三流式改造。

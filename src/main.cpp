@@ -67,6 +67,7 @@ static const unsigned long DISPLAY_FRAME_MS = 40;
 static const int SCROLL_SPEED_PX_PER_SEC = 35;
 static const unsigned long ANSWER_INTRO_MS = 700;
 static const unsigned long ANSWER_DONE_MS = 2000;
+static const unsigned long ERROR_HOLD_MS = 2000;
 static const size_t AUDIO_CHUNK_BYTES = (AUDIO_SAMPLE_RATE * 2 * AUDIO_CHUNK_MS) / 1000;
 static uint8_t audioChunk[AUDIO_CHUNK_BYTES];
 
@@ -316,6 +317,12 @@ void updateDisplay(bool force = false) {
     setIdleDisplay();
   }
 
+  if (displayMode == DisplayMode::Error && now - displayModeStartedAt >= ERROR_HOLD_MS) {
+    state = DeviceState::Idle;
+    expectingAudio = false;
+    setIdleDisplay();
+  }
+
   bool animated = displayMode == DisplayMode::AnswerMarquee;
   bool clockDue = displayMode == DisplayMode::Idle && now - lastClockDisplayAt >= 1000;
   if (!force && !displayDirty && !animated && !clockDue) {
@@ -377,6 +384,10 @@ void sendJson(const char *type) {
   String payload;
   serializeJson(doc, payload);
   webSocket.sendTXT(payload);
+}
+
+bool isIgnorableStrayAudioError(const char *text) {
+  return text != nullptr && strstr(text, "没有 start_record") != nullptr;
 }
 
 void setupDisplay() {
@@ -624,6 +635,11 @@ void handleCloudJson(const char *payload, size_t length) {
       setDisplayMode(DisplayMode::AnswerDone, "回答完毕", lastAnswerText);
     }
   } else if (strcmp(type, "error") == 0) {
+    if (isIgnorableStrayAudioError(text)) {
+      Serial.println("Ignored stray audio error after recording finished.");
+      return;
+    }
+
     expectingAudio = false;
     answerAudioFinished = true;
     state = DeviceState::Idle;

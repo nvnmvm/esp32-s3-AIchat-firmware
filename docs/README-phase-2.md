@@ -57,6 +57,8 @@ ASRPRO 通过 UART0 9600 波特率发送 ASCII 命令：
 
 OLED 显示由固件内部状态机统一刷新，WebSocket 事件只修改显示状态。这样可以避免 `asr_text`、`answer_text`、`audio_start`、`audio_end` 和云端 `status` 消息短时间连续到达时互相抢屏。
 
+如果旧云端在录音结束后把残余 PCM 包误报为 `收到音频，但当前没有 start_record。`，固件会直接忽略这个无害错误。其他普通云端错误会显示约 2 秒，然后自动回到等待唤醒，不会固定卡在错误页。
+
 回答滚动参数：
 
 ```cpp
@@ -68,7 +70,7 @@ ANSWER_DONE_MS = 2000;
 
 ## 配套云端
 
-推荐使用云端阶段二最新版：[`v2.1.2-phase2-complete`](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.2-phase2-complete)。
+推荐使用云端阶段二最新版：[`v2.1.3-phase2-stable`](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.3-phase2-stable)。
 
 VPS 测试前先清理阶段一旧部署：
 
@@ -87,6 +89,8 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 - AI 回答文字从右向左横向滚动。
 - `audio_end` 只标记音频结束，必须等文字滚动也结束后才显示 `回答完毕`。
 - `回答完毕` 保留约 2 秒后回到上海时间等待唤醒。
+- 旧云端误发的“没有 start_record”尾包错误不会卡住 OLED。
+- 普通 `error` 页面显示约 2 秒后会自动回到等待唤醒。
 - 云端日志能看到 PCM 音频上传。
 - OLED 显示云端返回的回答文本。
 - MAX98357A 能播放云端返回的测试音频。

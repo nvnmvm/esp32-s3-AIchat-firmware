@@ -51,11 +51,11 @@ ASRPRO 通过 UART0 9600 波特率发送 ASCII 命令：
 7. 上传结束和等待云端回答期间，OLED 显示 `思考中`。
 8. 云端返回 `answer_text` 或开始播放音频后，OLED 显示 `回答中`。
 9. 云端返回 `audio_start` 和 PCM 音频后，ESP32-S3 通过 I2S 输出到 MAX98357A。
-10. 收到 `audio_end` 后回到空闲，并继续显示上海时间。
+10. 收到 `audio_end` 后保留回答约 8 秒，再回到空闲并继续显示上海时间。
 
 ## 配套云端
 
-云端必须使用配套版本：`v2.0.1-phase2`。
+云端必须使用同名版本：`v2.1.0-phase2-complete`。
 
 VPS 测试前先清理阶段一旧部署：
 
@@ -68,6 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 - SH1106 OLED 正常显示状态。
 - ASRPRO 发出 `WAKE` 后固件进入录音。
 - 云端 `state=recording` 不会覆盖 `听取中`，`state=idle` 会回到上海时间。
+- 没有喇叭时，OLED 也能显示识别结果和 AI 回答。
+- `audio_start` 不覆盖回答正文，`audio_end` 后保留回答约 8 秒。
 - 云端日志能看到 PCM 音频上传。
 - OLED 显示云端返回的回答文本。
 - MAX98357A 能播放云端返回的测试音频。

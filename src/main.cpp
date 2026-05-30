@@ -33,11 +33,14 @@ static bool expectingAudio = false;
 static unsigned long lastWifiAttemptAt = 0;
 static unsigned long recordingStartedAt = 0;
 static unsigned long lastClockDisplayAt = 0;
+static unsigned long answerHoldUntil = 0;
 static String asrLine;
+static String lastAnswerText;
 
 static const char *NTP_SERVER_1 = "ntp.aliyun.com";
 static const char *NTP_SERVER_2 = "pool.ntp.org";
 static const char *SHANGHAI_TZ = "CST-8";
+static const unsigned long ANSWER_HOLD_MS = 8000;
 static const size_t AUDIO_CHUNK_BYTES = (AUDIO_SAMPLE_RATE * 2 * AUDIO_CHUNK_MS) / 1000;
 static uint8_t audioChunk[AUDIO_CHUNK_BYTES];
 
@@ -121,6 +124,47 @@ void drawDisplayLine(uint8_t y, const String &text) {
   display.drawUTF8(0, y, clipped.c_str());
 }
 
+String takeDisplayLine(String &text) {
+  text.trim();
+  String line;
+  int index = 0;
+
+  while (index < text.length()) {
+    uint8_t c = static_cast<uint8_t>(text[index]);
+    int charLen = 1;
+    if ((c & 0xE0) == 0xC0) {
+      charLen = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      charLen = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      charLen = 4;
+    }
+
+    String next = line + text.substring(index, index + charLen);
+    if (display.getUTF8Width(next.c_str()) > OLED_WIDTH) {
+      break;
+    }
+
+    line = next;
+    index += charLen;
+  }
+
+  text.remove(0, index);
+  text.trim();
+  return line;
+}
+
+String addEllipsisToFit(String line) {
+  while (line.length() > 0 && display.getUTF8Width((line + "...").c_str()) > OLED_WIDTH) {
+    int lastByte = line.length() - 1;
+    while (lastByte > 0 && (static_cast<uint8_t>(line[lastByte]) & 0xC0) == 0x80) {
+      lastByte--;
+    }
+    line.remove(lastByte);
+  }
+  return line + "...";
+}
+
 void showScreen(const String &line1, const String &line2 = "", const String &line3 = "") {
   Serial.printf("[screen] %s | %s | %s\n", line1.c_str(), line2.c_str(), line3.c_str());
 
@@ -138,6 +182,30 @@ void showScreen(const String &line1, const String &line2 = "", const String &lin
     drawDisplayLine(55, line3);
   }
   display.sendBuffer();
+}
+
+void showTextScreen(const String &title, const String &text, const String &footer = "") {
+  if (!displayReady) {
+    showScreen(title, text, footer);
+    return;
+  }
+
+  String rest = text;
+  rest.replace("\r", " ");
+  rest.replace("\n", " ");
+  String line2 = takeDisplayLine(rest);
+  String line3 = footer;
+
+  if (line3.length() == 0 && rest.length() > 0) {
+    line3 = takeDisplayLine(rest);
+    if (rest.length() > 0) {
+      line3 = addEllipsisToFit(line3);
+    }
+  } else if (line3.length() > 0 && rest.length() > 0) {
+    line2 = addEllipsisToFit(line2);
+  }
+
+  showScreen(title, line2, line3);
 }
 
 String shanghaiTimeText() {
@@ -362,6 +430,10 @@ void handleCloudJson(const char *payload, size_t length) {
       state = DeviceState::Processing;
       showScreen("思考中", text);
     } else if (strcmp(cloudState, "idle") == 0) {
+      if (answerHoldUntil > millis()) {
+        showTextScreen("回答完成", lastAnswerText);
+        return;
+      }
       expectingAudio = false;
       state = DeviceState::Idle;
       showShanghaiTime();
@@ -374,23 +446,25 @@ void handleCloudJson(const char *payload, size_t length) {
     }
   } else if (strcmp(type, "asr_text") == 0) {
     state = DeviceState::Processing;
-    showScreen("思考中", text);
+    showTextScreen("识别结果", text);
   } else if (strcmp(type, "answer_text") == 0) {
     state = DeviceState::Processing;
-    showScreen("回答中", text);
+    lastAnswerText = text;
+    showTextScreen("回答中", lastAnswerText);
   } else if (strcmp(type, "audio_start") == 0) {
     expectingAudio = true;
     state = DeviceState::Playing;
     i2s_zero_dma_buffer(I2S_NUM_1);
-    showScreen("回答中", "正在播放");
+    showTextScreen("回答中", lastAnswerText, "正在播放");
   } else if (strcmp(type, "audio_end") == 0) {
     expectingAudio = false;
-    state = DeviceState::Idle;
-    showShanghaiTime();
+    state = DeviceState::Playing;
+    answerHoldUntil = millis() + ANSWER_HOLD_MS;
+    showTextScreen("回答完成", lastAnswerText);
   } else if (strcmp(type, "error") == 0) {
     expectingAudio = false;
     state = DeviceState::Idle;
-    showScreen("云端错误", text);
+    showTextScreen("云端错误", text);
   }
 }
 
@@ -511,6 +585,20 @@ void refreshClockIfIdle() {
   showShanghaiTime();
 }
 
+void finishAnswerHoldIfDue() {
+  if (state != DeviceState::Playing || expectingAudio || answerHoldUntil == 0) {
+    return;
+  }
+
+  if (millis() < answerHoldUntil) {
+    return;
+  }
+
+  answerHoldUntil = 0;
+  state = DeviceState::Idle;
+  showShanghaiTime();
+}
+
 void streamMicIfRecording() {
   if (state != DeviceState::Recording) {
     return;
@@ -566,6 +654,7 @@ void loop() {
 
   webSocket.loop();
   pollAsrPro();
+  finishAnswerHoldIfDue();
   refreshClockIfIdle();
   streamMicIfRecording();
 }

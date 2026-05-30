@@ -1,6 +1,6 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v2.0.2-phase2`，阶段二语音和屏幕双输出闭环版状态修正版。
+当前版本：`v2.1.0-phase2-complete`，阶段二完善版。
 
 本仓库是 ESP32-S3 固件。阶段二使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的回答文本和 PCM 音频，实现 SH1106 OLED 显示与 MAX98357A 播放。
 
@@ -120,6 +120,8 @@ STOP
 
 固件会按云端 `status.state` 精确切换屏幕状态：`recording` 保持 `听取中`，`asr` / `thinking` 显示 `思考中`，`idle` 回到上海时间，避免云端状态消息覆盖录音界面。
 
+没有喇叭时也可以通过 OLED 验证闭环：固件会显示 `asr_text` 识别结果，收到 `answer_text` 后显示 AI 回答；`audio_start` 不再覆盖回答正文，`audio_end` 后会保留回答约 8 秒再回到上海时间。
+
 ## 正常串口输出
 
 ```text
@@ -135,3 +137,7 @@ Played audio chunk: ...
 ## 注意
 
 当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和短文本；阶段二重点是把语音上传、文本显示、音频播放闭环跑通。
+
+## 配套云端
+
+请使用云端仓库同名版本：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.0-phase2-complete)。

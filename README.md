@@ -1,148 +1,78 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v3.0.0-phase3-session-voice`，阶段三 session 语音助手配套固件版。
+当前版本：`v3.0.1-phase3-asr-quality`。
 
-本仓库是 ESP32-S3 固件。阶段三继续使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的 AI 回答文本和 TTS PCM 音频，实现 SH1106 OLED 从右向左滚动显示与 MAX98357A 播放。
+本固件配套云端 `v3.0.1-phase3-asr-quality`，保持 JSON + PCM WebSocket 协议，同时补充录音质量统计、录音边界保护和 OLED 显示流转修正。
 
-## 配套仓库
+## 3.0.1 变化
 
-- 云端仓库：https://github.com/nvnmvm/esp32-s3-AIchat.git
-- 固件仓库：https://github.com/nvnmvm/esp32-s3-AIchat-firmware.git
+- `start_record` 可携带协议、音频格式、设备 ID、麦克风声道和固件版本 metadata。
+- 录音时统计 `bytes`、`chunks`、`rms`、`peak`、`clipped`，通过 `audio_stats` 发给云端。
+- 增加 `MIC_CHANNEL_LEFT`、`MIC_GAIN_SHIFT`、`MIC_INVERT_SIGNAL`，方便排查声道反了、音量过低、信号反相等问题。
+- OLED 不再显示识别结果页，也不显示回答总览页；收到音频播放开始后直接显示滚动回答。
+- 回答播放/滚动结束附近的正常 WebSocket 重连不再强制显示“云端断开”。
+- WebSocket 心跳放宽，减少 TTS 播放期间误判断连。
 
-## 阶段 README
+## 配置
 
-- 阶段一：`docs/README-phase-1.md`
-- 阶段二：`docs/README-phase-2.md`
-- 阶段三沿用阶段二 JSON + PCM 协议，当前 README 为阶段三使用说明。
-
-每个阶段都通过 tag 和 GitHub Release 固定版本，后续阶段不覆盖前一阶段说明。
-
-## 硬件接线
-
-| 模块 | 模块引脚 | ESP32-S3 引脚 |
-| --- | --- | --- |
-| SH1106 OLED SDA | SDA | GPIO8 |
-| SH1106 OLED SCL | SCL | GPIO9 |
-| MS4030 SCK | SCK | GPIO4 |
-| MS4030 WS | WS | GPIO5 |
-| MS4030 SD | SD | GPIO6 |
-| ASRPRO TX | PB5 / UART0 TX | GPIO16 |
-| ASRPRO RX | PB6 / UART0 RX | GPIO17，可选 |
-| MAX98357A BCLK | BCLK / BCK | GPIO12 |
-| MAX98357A LRC | LRC / LRCLK / WS | GPIO13 |
-| MAX98357A DIN | DIN | GPIO14 |
-| MAX98357A SD | SD | GPIO15 或直接 3V3 |
-
-所有模块必须共地。MAX98357A 推荐使用 5V/VBUS 供电，喇叭只接 `SPK+` / `SPK-`。
-
-OLED 使用 U8g2 驱动，配置为 `SH1106`、地址 `0x3C`、软件 I2C，SDA 为 GPIO8，SCL 为 GPIO9。不要按 SSD1306 或硬件 I2C 测试代码来判断本固件。
-
-## 云端先部署
-
-阶段三 VPS 测试前先备份旧 `.env` 和 `runtime/`，再部署阶段三云端：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh && sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
-```
-
-部署完成后记录：
-
-- VPS IP 或域名
-- WebSocket 端口，默认 `8000`
-- WebSocket token
-
-## 配置固件
-
-复制配置模板：
-
-Windows PowerShell：
-
-```powershell
-Copy-Item include/config.example.h include/config.h
-```
-
-Linux / macOS：
+复制并编辑：
 
 ```bash
 cp include/config.example.h include/config.h
 ```
 
-编辑 `include/config.h`：
+关键配置：
 
-```c
-#define WIFI_SSID "你的WiFi名称"
-#define WIFI_PASSWORD "你的WiFi密码"
-#define WS_HOST "你的VPS公网IP或域名"
+```cpp
+#define WS_HOST "YOUR_VPS_IP_OR_DOMAIN"
 #define WS_PORT 8000
-#define WS_TOKEN "云端部署时生成的token"
+#define WS_TOKEN "CHANGE_ME_TO_THE_CLOUD_TOKEN"
+
+#define MIC_CHANNEL_LEFT true
+#define MIC_GAIN_SHIFT 0
+#define MIC_INVERT_SIGNAL false
+#define RECORD_MIN_MS 900
+#define RECORD_MAX_MS 12000
+#define SEND_AUDIO_STATS_TO_CLOUD true
+#define CLOUD_PROTOCOL_VERSION 301
 ```
 
-`include/config.h` 已加入 `.gitignore`，不会提交到 GitHub。
+如果云端 `audio_report.json` 显示 `mostly_zero` 或 `too_quiet`，优先尝试：
 
-## 烧录
+1. 切换 `MIC_CHANNEL_LEFT`。
+2. 检查 I2S 麦克风接线和供电。
+3. 适当调整 `MIC_GAIN_SHIFT`，同时观察 `clipped` 是否升高。
 
-Windows PowerShell：
+## 构建
 
-```powershell
-.\scripts\flash.ps1
+```bash
+pio run
 ```
 
-手动命令：
+烧录：
 
 ```bash
 pio run -t upload
-pio device monitor
 ```
 
-## ASRPRO 命令
+或使用脚本：
 
-ASRPRO 通过 UART0 9600 波特率向 ESP32-S3 发送：
-
-```text
-WAKE
-CANCEL
-STOP
+```bash
+bash scripts/flash.sh
 ```
 
-`WAKE` 开始一轮录音；`CANCEL` 取消录音或播放；`STOP` 回到空闲。
+## 协议
 
-## OLED 状态
+ESP32 到云端：
 
-OLED 使用 U8g2 SH1106 软件 I2C，并使用中文字体显示关键状态：
-
-| 场景 | OLED 显示 |
-| --- | --- |
-| 正在连接 WiFi | `网络连接中` |
-| WiFi 已连接 | `WiFi连接成功` |
-| 空闲等待唤醒 | `等待唤醒`、`上海时间 HH:MM:SS`、`说 小一小一` |
-| ASRPRO 发出 `WAKE` | `听取中` |
-| 已上传音频并等待云端返回 | `思考中` |
-| 云端返回 `answer_text` | `回答中`，短暂停留后进入回答正文 |
-| 云端返回 `audio_start` 并播放音频 | 只显示 AI 回答文字，回答从右向左横向滚动 |
-| 回答文字滚动结束且收到 `audio_end` | `回答完毕`，保留约 2 秒后回到等待唤醒 |
-
-固件会按云端 `status.state` 精确切换显示状态：`recording` 保持 `听取中`，`asr` / `thinking` 显示 `思考中`，`idle` 在非回答阶段才回到上海时间。OLED 刷新统一由固件显示状态机处理，WebSocket 事件只修改显示状态，避免识别结果、回答中、播放中、回答完成等页面互相抢屏。
-
-没有喇叭时也可以通过 OLED 验证闭环：固件会显示 `asr_text` 识别结果，收到 `answer_text` 后显示 `回答中`，随后滚动显示 AI 回答；`audio_start` 不再占用回答正文区域显示“正在播放”，`audio_end` 只标记音频已结束，必须等文字滚动也结束后才显示 `回答完毕`。
-
-固件会忽略旧云端可能发出的 `收到音频，但当前没有 start_record。` 无害尾包错误，避免录音结束后的残余 PCM 包把 OLED 固定在 `云端错误`。其他普通错误会显示约 2 秒，然后自动回到等待唤醒。
-
-## 正常串口输出
-
-```text
-ESP32-S3 AI voice phase 3 session ASR/AI/TTS
-WiFi connected, IP=...
-WebSocket connected: ...
-ASRPRO command: WAKE
-Sent PCM chunk: 1280 bytes
-Cloud JSON type=answer_text text=...
-Played audio chunk: ...
+```json
+{"type":"start_record","protocol":301,"audio":{"format":"pcm_s16le","sample_rate":16000,"channels":1,"chunk_ms":40},"device":{"id":"esp32-s3-voice-001","mic_channel":"left","firmware":"v3.0.1-phase3-asr-quality"}}
 ```
 
-## 注意
+之后持续发送 PCM 二进制块，并周期性发送：
 
-当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和回答文本，回答滚动刷新间隔为 40ms，约 25 FPS。阶段三重点是跑通真实录音上传、云端 ASR、AI API 回答文本、OLED 滚动显示和 TTS 播放。后续可继续做音频环形缓冲、真正边收边播、ASR partial 字幕和 DeepSeek 流式文字同步。
+```json
+{"type":"audio_stats","reason":"recording","bytes":32000,"chunks":25,"rms":1200,"peak":8000,"clipped":0,"mic_channel":"left"}
+```
 
-## 配套云端
-
-推荐使用云端仓库阶段三版本：`v3.0.0-phase3-session-voice`。本固件继续使用 JSON + PCM WebSocket 协议，可直接接收阶段三云端返回的 `answer_text` 和 TTS PCM 音频。
+云端完成 VAD 或固件达到最大录音时间后进入处理和播放。

@@ -4,7 +4,7 @@
 #define WIFI_SSID "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
-// Phase 2 uses the JSON + PCM WebSocket protocol:
+// Phase 3 keeps the JSON + PCM WebSocket protocol:
 // ws://YOUR_VPS_IP:PORT/ws?token=...
 #define WS_HOST "YOUR_VPS_IP_OR_DOMAIN"
 #define WS_PORT 8000

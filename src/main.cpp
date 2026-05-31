@@ -404,7 +404,7 @@ void setupDisplay() {
 
   display.setPowerSave(0);
   display.setContrast(180);
-  setNoticeScreen("阶段二", "屏幕初始化完成", "SH1106 0x3C");
+  setNoticeScreen("阶段三", "屏幕初始化完成", "SH1106 0x3C");
   updateDisplay(true);
 }
 
@@ -779,7 +779,7 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("ESP32-S3 AI voice phase 2 voice/screen loopback");
+  Serial.println("ESP32-S3 AI voice phase 3 session ASR/AI/TTS");
   Serial.printf("Device ID: %s\n", DEVICE_ID);
 
   if (!validateConfig()) {

@@ -1,8 +1,8 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v2.1.2-display-stable`，阶段二稳定显示闭环版。
+当前版本：`v3.0.0-phase3-session-voice`，阶段三 session 语音助手配套固件版。
 
-本仓库是 ESP32-S3 固件。阶段二使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的回答文本和 PCM 音频，实现 SH1106 OLED 显示与 MAX98357A 播放。
+本仓库是 ESP32-S3 固件。阶段三继续使用 ASRPRO 唤醒，采集 MS4030 I2S 麦克风音频上传到云端，再接收云端返回的 AI 回答文本和 TTS PCM 音频，实现 SH1106 OLED 从右向左滚动显示与 MAX98357A 播放。
 
 ## 配套仓库
 
@@ -13,6 +13,7 @@
 
 - 阶段一：`docs/README-phase-1.md`
 - 阶段二：`docs/README-phase-2.md`
+- 阶段三沿用阶段二 JSON + PCM 协议，当前 README 为阶段三使用说明。
 
 每个阶段都通过 tag 和 GitHub Release 固定版本，后续阶段不覆盖前一阶段说明。
 
@@ -38,7 +39,7 @@ OLED 使用 U8g2 驱动，配置为 `SH1106`、地址 `0x3C`、软件 I2C，SDA 
 
 ## 云端先部署
 
-阶段二 VPS 测试前先删除阶段一旧部署，再部署阶段二云端：
+阶段三 VPS 测试前先备份旧 `.env` 和 `runtime/`，再部署阶段三云端：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh && sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
@@ -107,7 +108,7 @@ STOP
 
 ## OLED 状态
 
-阶段二 OLED 已切换为 U8g2 SH1106 软件 I2C，并使用中文字体显示关键状态：
+OLED 使用 U8g2 SH1106 软件 I2C，并使用中文字体显示关键状态：
 
 | 场景 | OLED 显示 |
 | --- | --- |
@@ -129,7 +130,7 @@ STOP
 ## 正常串口输出
 
 ```text
-ESP32-S3 AI voice phase 2 voice/screen loopback
+ESP32-S3 AI voice phase 3 session ASR/AI/TTS
 WiFi connected, IP=...
 WebSocket connected: ...
 ASRPRO command: WAKE
@@ -140,8 +141,8 @@ Played audio chunk: ...
 
 ## 注意
 
-当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和回答文本，回答滚动刷新间隔为 40ms，约 25 FPS。阶段二重点是把唤醒、录音、云端 AI 回答、OLED 文本、MAX98357A 播放闭环跑通；阶段三再做音频环形缓冲、真正边收边播、ASR partial 字幕和 DeepSeek 流式文字同步。
+当前 OLED 使用 U8g2 SH1106 软件 I2C 显示中文状态和回答文本，回答滚动刷新间隔为 40ms，约 25 FPS。阶段三重点是跑通真实录音上传、云端 ASR、AI API 回答文本、OLED 滚动显示和 TTS 播放。后续可继续做音频环形缓冲、真正边收边播、ASR partial 字幕和 DeepSeek 流式文字同步。
 
 ## 配套云端
 
-推荐使用云端仓库阶段二最新版：[v2.1.3-phase2-stable](https://github.com/nvnmvm/esp32-s3-AIchat/releases/tag/v2.1.3-phase2-stable)。本固件仍使用阶段二 JSON + PCM WebSocket 协议，不需要云端做阶段三流式改造。
+推荐使用云端仓库阶段三版本：`v3.0.0-phase3-session-voice`。本固件继续使用 JSON + PCM WebSocket 协议，可直接接收阶段三云端返回的 `answer_text` 和 TTS PCM 音频。

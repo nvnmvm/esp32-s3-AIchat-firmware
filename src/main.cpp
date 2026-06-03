@@ -45,7 +45,7 @@
 #endif
 
 #ifndef CLOUD_PROTOCOL_VERSION
-#define CLOUD_PROTOCOL_VERSION 301
+#define CLOUD_PROTOCOL_VERSION 302
 #endif
 
 #ifndef SEND_START_RECORD_METADATA
@@ -450,7 +450,7 @@ void sendStartRecordJson() {
   JsonObject device = doc["device"].to<JsonObject>();
   device["id"] = DEVICE_ID;
   device["mic_channel"] = MIC_CHANNEL_LEFT ? "left" : "right";
-  device["firmware"] = "v3.0.1-phase3-asr-quality";
+  device["firmware"] = "v3.0.2-menu-asr";
 #endif
   String payload;
   serializeJson(doc, payload);

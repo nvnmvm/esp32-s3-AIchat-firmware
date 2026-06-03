@@ -1,0 +1,6 @@
+*.cpp text eol=lf
+*.h text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+*.sh text eol=lf
+.gitattributes text eol=lf

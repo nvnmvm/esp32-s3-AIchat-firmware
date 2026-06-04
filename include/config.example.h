@@ -29,7 +29,7 @@
 #define MIC_INVERT_SIGNAL false
 
 // Cloud protocol compatibility.
-#define CLOUD_PROTOCOL_VERSION 302
+#define CLOUD_PROTOCOL_VERSION 303
 #define SEND_START_RECORD_METADATA true
 
 // OLED: SH1106, U8g2, software I2C, 0x3C, SDA GPIO8, SCL GPIO9.

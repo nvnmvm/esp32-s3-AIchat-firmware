@@ -5,6 +5,9 @@
 #include <U8g2lib.h>
 #include <ctype.h>
 #include <driver/i2s.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -14,10 +17,6 @@
 
 #ifndef I2S_COMM_FORMAT_STAND_I2S
 #define I2S_COMM_FORMAT_STAND_I2S I2S_COMM_FORMAT_I2S
-#endif
-
-#ifndef RECORD_MIN_MS
-#define RECORD_MIN_MS 900
 #endif
 
 #ifndef RECORD_SEND_AFTER_FINISH_GUARD_MS
@@ -45,7 +44,7 @@
 #endif
 
 #ifndef CLOUD_PROTOCOL_VERSION
-#define CLOUD_PROTOCOL_VERSION 303
+#define CLOUD_PROTOCOL_VERSION 400
 #endif
 
 #ifndef SEND_START_RECORD_METADATA
@@ -68,9 +67,7 @@ enum class DisplayMode {
   Listening,
   Thinking,
   AsrResult,
-  AnswerIntro,
   AnswerMarquee,
-  AnswerDone,
   Error,
   Notice,
 };
@@ -79,10 +76,10 @@ static DeviceState state = DeviceState::Idle;
 static DisplayMode displayMode = DisplayMode::Notice;
 static bool websocketConnected = false;
 static bool displayReady = false;
-static bool expectingAudio = false;
-static bool displayDirty = true;
+static volatile bool expectingAudio = false;
+static volatile bool displayDirty = true;
 static bool marqueeFinished = false;
-static bool answerAudioFinished = true;
+static volatile bool answerAudioFinished = true;
 static unsigned long lastWifiAttemptAt = 0;
 static unsigned long recordingStartedAt = 0;
 static unsigned long lastClockDisplayAt = 0;
@@ -101,6 +98,23 @@ static unsigned long lastAudioSentAt = 0;
 static unsigned long lastAudioStatsAt = 0;
 static unsigned long suppressDisconnectNoticeUntil = 0;
 static uint32_t recordingBytesSent = 0;
+static uint32_t currentTurnId = 0;
+static volatile uint32_t playbackGeneration = 0;
+static volatile bool playbackActive = false;
+
+static const size_t PLAYBACK_CHUNK_BYTES = 4096;
+static const UBaseType_t PLAYBACK_QUEUE_LENGTH = 6;
+
+struct PlaybackChunk {
+  uint32_t generation = 0;
+  uint16_t length = 0;
+  bool endOfStream = false;
+  uint8_t data[PLAYBACK_CHUNK_BYTES];
+};
+
+static QueueHandle_t playbackQueue = nullptr;
+static PlaybackChunk incomingPlaybackChunk;
+static PlaybackChunk speakerPlaybackChunk;
 
 struct AudioStats {
   uint32_t chunks = 0;
@@ -118,8 +132,6 @@ static const char *NTP_SERVER_2 = "pool.ntp.org";
 static const char *SHANGHAI_TZ = "CST-8";
 static const unsigned long DISPLAY_FRAME_MS = 40;
 static const int SCROLL_SPEED_PX_PER_SEC = 35;
-static const unsigned long ANSWER_INTRO_MS = 700;
-static const unsigned long ANSWER_DONE_MS = 2000;
 static const unsigned long ERROR_HOLD_MS = 2000;
 static const size_t AUDIO_CHUNK_BYTES = (AUDIO_SAMPLE_RATE * 2 * AUDIO_CHUNK_MS) / 1000;
 static uint8_t audioChunk[AUDIO_CHUNK_BYTES];
@@ -362,12 +374,6 @@ void updateDisplay(bool force = false) {
     }
   }
 
-  if (displayMode == DisplayMode::AnswerDone && now - displayModeStartedAt >= ANSWER_DONE_MS) {
-    state = DeviceState::Idle;
-    expectingAudio = false;
-    setIdleDisplay();
-  }
-
   if (displayMode == DisplayMode::Error && now - displayModeStartedAt >= ERROR_HOLD_MS) {
     state = DeviceState::Idle;
     expectingAudio = false;
@@ -401,9 +407,6 @@ void updateDisplay(bool force = false) {
     case DisplayMode::AsrResult:
       renderTextScreen("识别结果", displayBody);
       break;
-    case DisplayMode::AnswerIntro:
-      renderTextScreen("回答中", displayBody);
-      break;
     case DisplayMode::AnswerMarquee: {
       unsigned long elapsed = now - marqueeStartAt;
       int x = OLED_WIDTH - static_cast<int>((elapsed * SCROLL_SPEED_PX_PER_SEC) / 1000);
@@ -413,9 +416,6 @@ void updateDisplay(bool force = false) {
       display.drawUTF8(x, 38, marqueeText.c_str());
       break;
     }
-    case DisplayMode::AnswerDone:
-      renderTextScreen("回答完毕", displayBody);
-      break;
     case DisplayMode::Error:
       renderTextScreen(displayTitle.length() > 0 ? displayTitle : "错误", displayBody);
       break;
@@ -429,17 +429,34 @@ void updateDisplay(bool force = false) {
   lastDisplayFrameAt = now;
 }
 
-void sendJson(const char *type) {
+void sendHelloJson() {
   JsonDocument doc;
-  doc["type"] = type;
+  doc["type"] = "hello";
+  doc["protocol"] = CLOUD_PROTOCOL_VERSION;
+  doc["firmware"] = "v4.0.0-realtime-foundation";
+  doc["device_id"] = DEVICE_ID;
   String payload;
   serializeJson(doc, payload);
   webSocket.sendTXT(payload);
 }
 
-void sendStartRecordJson() {
+void sendTurnControlJson(const char *type, const char *reason = "") {
   JsonDocument doc;
-  doc["type"] = "start_record";
+  doc["type"] = type;
+  doc["protocol"] = CLOUD_PROTOCOL_VERSION;
+  doc["turn_id"] = currentTurnId;
+  if (reason != nullptr && strlen(reason) > 0) {
+    doc["reason"] = reason;
+  }
+  String payload;
+  serializeJson(doc, payload);
+  webSocket.sendTXT(payload);
+}
+
+void sendTurnStartJson() {
+  JsonDocument doc;
+  doc["type"] = "turn_start";
+  doc["turn_id"] = currentTurnId;
 #if SEND_START_RECORD_METADATA
   doc["protocol"] = CLOUD_PROTOCOL_VERSION;
   JsonObject audio = doc["audio"].to<JsonObject>();
@@ -450,7 +467,7 @@ void sendStartRecordJson() {
   JsonObject device = doc["device"].to<JsonObject>();
   device["id"] = DEVICE_ID;
   device["mic_channel"] = MIC_CHANNEL_LEFT ? "left" : "right";
-  device["firmware"] = "v3.0.3-config-readiness";
+  device["firmware"] = "v4.0.0-realtime-foundation";
 #endif
   String payload;
   serializeJson(doc, payload);
@@ -507,6 +524,8 @@ void sendAudioStatsJson(const char *reason) {
 
   JsonDocument doc;
   doc["type"] = "audio_stats";
+  doc["protocol"] = CLOUD_PROTOCOL_VERSION;
+  doc["turn_id"] = currentTurnId;
   doc["reason"] = reason;
   doc["bytes"] = audioStats.bytes;
   doc["chunks"] = audioStats.chunks;
@@ -538,7 +557,7 @@ void setupDisplay() {
 
   display.setPowerSave(0);
   display.setContrast(180);
-  setNoticeScreen("阶段三", "屏幕初始化完成", "SH1106 0x3C");
+  setNoticeScreen("阶段四", "实时框架已加载", "SH1106 0x3C");
   updateDisplay(true);
 }
 
@@ -615,6 +634,85 @@ void setupI2sSpeaker() {
   i2s_zero_dma_buffer(I2S_NUM_1);
 }
 
+void stopPlaybackNow() {
+  playbackGeneration++;
+  playbackActive = false;
+  expectingAudio = false;
+  answerAudioFinished = true;
+  if (playbackQueue != nullptr) {
+    xQueueReset(playbackQueue);
+  }
+  i2s_zero_dma_buffer(I2S_NUM_1);
+}
+
+void playbackTask(void *parameter) {
+  (void)parameter;
+  while (true) {
+    if (xQueueReceive(playbackQueue, &speakerPlaybackChunk, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+    if (speakerPlaybackChunk.generation != playbackGeneration) {
+      continue;
+    }
+    if (speakerPlaybackChunk.endOfStream) {
+      playbackActive = false;
+      expectingAudio = false;
+      answerAudioFinished = true;
+      displayDirty = true;
+      Serial.printf("Playback queue drained for turn=%u\n", static_cast<unsigned>(currentTurnId));
+      continue;
+    }
+    if (!playbackActive || speakerPlaybackChunk.length == 0) {
+      continue;
+    }
+
+    size_t written = 0;
+    esp_err_t err = i2s_write(
+        I2S_NUM_1,
+        speakerPlaybackChunk.data,
+        speakerPlaybackChunk.length,
+        &written,
+        pdMS_TO_TICKS(250));
+    if (err != ESP_OK || written != speakerPlaybackChunk.length) {
+      Serial.printf("Speaker write incomplete: err=%d bytes=%u/%u\n",
+                    err,
+                    static_cast<unsigned>(written),
+                    static_cast<unsigned>(speakerPlaybackChunk.length));
+    }
+  }
+}
+
+void setupPlaybackTask() {
+  playbackQueue = xQueueCreate(PLAYBACK_QUEUE_LENGTH, sizeof(PlaybackChunk));
+  if (playbackQueue == nullptr) {
+    Serial.println("Playback queue allocation failed.");
+    return;
+  }
+  BaseType_t created = xTaskCreatePinnedToCore(
+      playbackTask,
+      "speaker-playback",
+      4096,
+      nullptr,
+      2,
+      nullptr,
+      0);
+  if (created != pdPASS) {
+    Serial.println("Playback task creation failed.");
+    vQueueDelete(playbackQueue);
+    playbackQueue = nullptr;
+  }
+}
+
+bool enqueuePlaybackEnd() {
+  if (playbackQueue == nullptr) {
+    return false;
+  }
+  incomingPlaybackChunk.generation = playbackGeneration;
+  incomingPlaybackChunk.length = 0;
+  incomingPlaybackChunk.endOfStream = true;
+  return xQueueSend(playbackQueue, &incomingPlaybackChunk, pdMS_TO_TICKS(20)) == pdTRUE;
+}
+
 void syncShanghaiTime() {
   configTzTime(SHANGHAI_TZ, NTP_SERVER_1, NTP_SERVER_2);
 
@@ -678,27 +776,29 @@ void startRecordingNow() {
     return;
   }
 
+  stopPlaybackNow();
   i2s_zero_dma_buffer(I2S_NUM_0);
   resetAudioStats();
   recordingStopRequested = false;
-  sendStartRecordJson();
+  currentTurnId++;
+  sendTurnStartJson();
   recordingStartedAt = millis();
   state = DeviceState::Recording;
   setDisplayMode(DisplayMode::Listening, "", "请说话");
 }
 
-void cancelTurn(const char *reason) {
-  sendJson("cancel");
+void cancelTurn(const char *reason, bool showNotice = true) {
+  sendTurnControlJson("cancel", reason);
   recordingStopRequested = false;
-  expectingAudio = false;
-  answerAudioFinished = true;
+  stopPlaybackNow();
   state = DeviceState::Idle;
   i2s_zero_dma_buffer(I2S_NUM_0);
-  i2s_zero_dma_buffer(I2S_NUM_1);
-  setNoticeScreen("已取消", reason);
-  updateDisplay(true);
-  delay(800);
-  setIdleDisplay();
+  if (showNotice) {
+    setNoticeScreen("已取消", reason);
+    updateDisplay(true);
+    delay(500);
+    setIdleDisplay();
+  }
 }
 
 void finishRecording(const char *reason) {
@@ -712,7 +812,7 @@ void finishRecording(const char *reason) {
     delay(RECORD_SEND_AFTER_FINISH_GUARD_MS - (millis() - lastAudioSentAt));
   }
   sendAudioStatsJson(reason);
-  sendJson("finish_record");
+  sendTurnControlJson("turn_end", reason);
   state = DeviceState::Processing;
   setDisplayMode(DisplayMode::Thinking, "", "已上传云端");
 }
@@ -730,9 +830,29 @@ void handleCloudJson(const char *payload, size_t length) {
   const char *cloudState = doc["state"] | "";
   Serial.printf("Cloud JSON type=%s text=%s\n", type, text);
 
+  if (strcmp(type, "hello") == 0) {
+    int protocol = doc["protocol"] | 0;
+    const char *version = doc["version"] | "unknown";
+    Serial.printf("Cloud handshake protocol=%d version=%s\n", protocol, version);
+    if (protocol < CLOUD_PROTOCOL_VERSION) {
+      setNoticeScreen("协议版本较旧", String("云端 ") + protocol, version);
+    }
+    return;
+  }
+
+  if (!doc["turn_id"].isNull()) {
+    uint32_t messageTurnId = doc["turn_id"].as<uint32_t>();
+    if (messageTurnId != currentTurnId) {
+      Serial.printf("Ignored stale cloud event turn=%u current=%u type=%s\n",
+                    static_cast<unsigned>(messageTurnId),
+                    static_cast<unsigned>(currentTurnId),
+                    type);
+      return;
+    }
+  }
+
   if (strcmp(type, "status") == 0) {
-    if (displayMode == DisplayMode::AnswerMarquee ||
-        displayMode == DisplayMode::AnswerDone) {
+    if (displayMode == DisplayMode::AnswerMarquee) {
       return;
     }
 
@@ -757,9 +877,19 @@ void handleCloudJson(const char *payload, size_t length) {
     } else {
       setNoticeScreen("状态", text);
     }
-  } else if (strcmp(type, "asr_text") == 0) {
+  } else if (strcmp(type, "turn_ready") == 0) {
+    bool realtimeAsr = doc["realtime_asr"] | false;
+    state = DeviceState::Recording;
+    setDisplayMode(DisplayMode::Listening, "", realtimeAsr ? "实时识别已连接" : "批量识别回退");
+  } else if (strcmp(type, "capture_stop") == 0) {
+    finishRecording("server_vad");
+  } else if (strcmp(type, "asr_partial") == 0) {
+    if (state == DeviceState::Recording) {
+      setDisplayMode(DisplayMode::AsrResult, "", text);
+    }
+  } else if (strcmp(type, "asr_final") == 0 || strcmp(type, "asr_text") == 0) {
     state = DeviceState::Processing;
-    Serial.printf("ASR text hidden on OLED: %s\n", text);
+    setDisplayMode(DisplayMode::AsrResult, "", text);
   } else if (strcmp(type, "answer_text") == 0) {
     state = DeviceState::Processing;
     lastAnswerText = text;
@@ -770,44 +900,58 @@ void handleCloudJson(const char *payload, size_t length) {
     if (strlen(answerText) > 0) {
       lastAnswerText = answerText;
     }
+    state = DeviceState::Playing;
+    stopPlaybackNow();
     expectingAudio = true;
     answerAudioFinished = false;
-    state = DeviceState::Playing;
-    i2s_zero_dma_buffer(I2S_NUM_1);
+    playbackActive = true;
     startAnswerMarquee(lastAnswerText);
   } else if (strcmp(type, "audio_end") == 0) {
-    expectingAudio = false;
-    answerAudioFinished = true;
     state = DeviceState::Playing;
-    if (marqueeFinished) {
-      state = DeviceState::Idle;
-      setIdleDisplay();
+    if (!enqueuePlaybackEnd()) {
+      Serial.println("Playback end marker queue failed; completing immediately.");
+      playbackActive = false;
+      expectingAudio = false;
+      answerAudioFinished = true;
     }
     suppressDisconnectNoticeUntil = millis() + 5000;
+  } else if (strcmp(type, "turn_cancelled") == 0) {
+    stopPlaybackNow();
+    state = DeviceState::Idle;
+    setIdleDisplay();
+  } else if (strcmp(type, "asr_warning") == 0) {
+    Serial.printf("Realtime ASR warning: %s\n", text);
   } else if (strcmp(type, "error") == 0) {
     if (isIgnorableStrayAudioError(text)) {
       Serial.println("Ignored stray audio error after recording finished.");
       return;
     }
 
-    expectingAudio = false;
-    answerAudioFinished = true;
+    stopPlaybackNow();
     state = DeviceState::Idle;
     setDisplayMode(DisplayMode::Error, "云端错误", text);
   }
 }
 
 void handleCloudAudio(uint8_t *payload, size_t length) {
-  if (!expectingAudio || length == 0) {
+  if (!expectingAudio || !playbackActive || playbackQueue == nullptr || length == 0) {
     Serial.printf("Ignored binary payload: %u bytes\n", static_cast<unsigned>(length));
     return;
   }
 
-  size_t written = 0;
-  i2s_write(I2S_NUM_1, payload, length, &written, portMAX_DELAY);
-  Serial.printf("Played audio chunk: %u/%u bytes\n",
-                static_cast<unsigned>(written),
-                static_cast<unsigned>(length));
+  size_t offset = 0;
+  while (offset < length) {
+    size_t blockLength = min(PLAYBACK_CHUNK_BYTES, length - offset);
+    incomingPlaybackChunk.generation = playbackGeneration;
+    incomingPlaybackChunk.length = static_cast<uint16_t>(blockLength);
+    incomingPlaybackChunk.endOfStream = false;
+    memcpy(incomingPlaybackChunk.data, payload + offset, blockLength);
+    if (xQueueSend(playbackQueue, &incomingPlaybackChunk, pdMS_TO_TICKS(20)) != pdTRUE) {
+      Serial.printf("Playback queue full; dropped %u bytes\n", static_cast<unsigned>(length - offset));
+      return;
+    }
+    offset += blockLength;
+  }
 }
 
 void setupWebSocket() {
@@ -826,8 +970,7 @@ void setupWebSocket() {
     switch (type) {
       case WStype_DISCONNECTED:
         websocketConnected = false;
-        expectingAudio = false;
-        answerAudioFinished = true;
+        stopPlaybackNow();
         Serial.println("WebSocket disconnected");
         if (state == DeviceState::Recording || state == DeviceState::Processing) {
           state = DeviceState::Idle;
@@ -840,6 +983,7 @@ void setupWebSocket() {
       case WStype_CONNECTED:
         websocketConnected = true;
         Serial.printf("WebSocket connected: %s\n", payload);
+        sendHelloJson();
         if (displayMode != DisplayMode::AnswerMarquee) {
           setIdleDisplay();
         }
@@ -874,13 +1018,16 @@ void processAsrCommand(const String &command) {
   if (command == "WAKE") {
     if (state == DeviceState::Idle) {
       startRecordingNow();
+    } else if (state == DeviceState::Processing || state == DeviceState::Playing) {
+      Serial.println("Barge-in: cancelling the current cloud turn and starting a new recording.");
+      cancelTurn("barge_in", false);
+      startRecordingNow();
     }
   } else if (command == "CANCEL") {
     cancelTurn("语音取消");
   } else if (command == "STOP") {
-    sendJson("stop");
-    expectingAudio = false;
-    answerAudioFinished = true;
+    sendTurnControlJson("stop", "voice_stop");
+    stopPlaybackNow();
     state = DeviceState::Idle;
     setNoticeScreen("已停止");
     updateDisplay(true);
@@ -948,7 +1095,7 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("ESP32-S3 AI voice phase 3 session ASR/AI/TTS");
+  Serial.println("ESP32-S3 AI voice phase 4 realtime foundation");
   Serial.printf("Device ID: %s\n", DEVICE_ID);
 
   if (!validateConfig()) {
@@ -961,6 +1108,7 @@ void setup() {
   setupDisplay();
   setupI2sMic();
   setupI2sSpeaker();
+  setupPlaybackTask();
   AsrSerial.begin(ASRPRO_BAUD, SERIAL_8N1, PIN_ASRPRO_RX, PIN_ASRPRO_TX);
 
   connectWifi();

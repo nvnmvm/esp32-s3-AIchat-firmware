@@ -1,78 +1,51 @@
 # ESP32-S3 AI 对话机器人固件
 
-当前版本：`v3.0.3-config-readiness`。
+当前版本：`v4.1.0-streaming-pipeline`，配套云端协议：`400`。
 
-本固件配套云端 `v3.0.3-config-readiness`，保持 JSON + PCM WebSocket 协议。3.0.3 云端重点修正部署与模型配置路径，固件侧同步协议 metadata 和版本号，继续沿用 3.0.2 的录音质量统计、录音边界保护和 OLED 显示流转修正。
+该版本在 Qwen 实时 ASR、turn ID、异步 I2S 播放和语音打断基础上，加入 `answer_delta` 增量回答显示、流式回答状态和最终文本/播放状态兼容处理。云端和固件仍按半双工工作，不宣称已经具备无 AEC 的真全双工能力。
 
-## 3.0.3 变化
-
-- `start_record` metadata 中的 `firmware` 更新为 `v3.0.3-config-readiness`。
-- `CLOUD_PROTOCOL_VERSION` 默认更新为 `303`，用于云端日志和排查时区分固件版本。
-- 配套云端 3.0.3 的无模型测试路径：即使暂时不配置 ASR/LLM API，也可以先验证录音、OLED、喇叭和 WebSocket 链路。
-- OLED 仍不显示识别结果页，也不显示回答总览页；收到回答文本后直接进入滚动回复页面。
-- 回答播放 / 滚动结束附近的正常 WebSocket 重连不会强制显示“云端断开”页面。
-- 音频统计、VAD 边界、杂散音频兼容逻辑保持 3.0.2 行为。
-
-## 配置
-
-复制并编辑：
+## 快速开始
 
 ```bash
-cp include/config.example.h include/config.h
+bash scripts/init-config.sh
 ```
 
-关键配置：
+编辑 `include/config.h`：
 
 ```cpp
-#define WS_HOST "YOUR_VPS_IP_OR_DOMAIN"
-#define WS_PORT 8000
-#define WS_TOKEN "CHANGE_ME_TO_THE_CLOUD_TOKEN"
-
-#define MIC_CHANNEL_LEFT true
-#define MIC_GAIN_SHIFT 0
-#define MIC_INVERT_SIGNAL false
-#define RECORD_MIN_MS 900
-#define RECORD_MAX_MS 12000
-#define SEND_AUDIO_STATS_TO_CLOUD true
-#define CLOUD_PROTOCOL_VERSION 303
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define WS_HOST "voice.example.com"
+#define WS_PORT 443
+#define WS_USE_SSL true
+#define WS_TOKEN "与云端一致的token"
+#define CLOUD_PROTOCOL_VERSION 400
 ```
 
-如果云端 `audio_report.json` 显示 `mostly_zero` 或 `too_quiet`，优先尝试：
-
-1. 切换 `MIC_CHANNEL_LEFT`。
-2. 检查 I2S 麦克风接线和供电。
-3. 适当调整 `MIC_GAIN_SHIFT`，同时观察 `clipped` 是否升高。
-
-## 构建
+构建和烧录：
 
 ```bash
 pio run
-```
-
-烧录：
-
-```bash
 pio run -t upload
+pio device monitor -b 115200
 ```
 
-或使用脚本：
+## 协议摘要
 
-```bash
-bash scripts/flash.sh
-```
-
-## 协议
-
-ESP32 到云端：
+连接后先发送：
 
 ```json
-{"type":"start_record","protocol":303,"audio":{"format":"pcm_s16le","sample_rate":16000,"channels":1,"chunk_ms":40},"device":{"id":"esp32-s3-voice-001","mic_channel":"left","firmware":"v3.0.3-config-readiness"}}
+{"type":"hello","protocol":400,"firmware":"v4.1.0-streaming-pipeline","device_id":"esp32-s3-voice-001"}
 ```
 
-之后持续发送 PCM 二进制块，并周期性发送：
+唤醒后发送 `turn_start`，随后持续上传 16 kHz/mono/s16le PCM。收到 `capture_stop` 后发送 `turn_end`。`asr_partial` 更新识别字幕，`answer_delta` 逐步追加回答，第一段 `audio_start` 到达后立即播放。播放或处理中再次唤醒会发送 `cancel(reason=barge_in)`、清空旧音频并开始新 turn。
 
-```json
-{"type":"audio_stats","reason":"recording","bytes":32000,"chunks":25,"rms":1200,"peak":8000,"clipped":0,"mic_channel":"left"}
-```
+## 文档
 
-云端完成 VAD 或固件达到最大录音时间后进入处理和播放。
+- [阶段四详细开发、配置和验收文档](docs/README-phase-4.md)
+- [阶段 4.1 发布说明](RELEASE-v4.1.0-streaming-pipeline.md)
+- [阶段四基础版发布说明](RELEASE-v4.0.0-realtime-foundation.md)
+- [硬件引脚](include/pins.h)
+- [配置模板](include/config.example.h)
+
+`include/config.h` 包含 Wi-Fi 和 token，不要提交到 Git。

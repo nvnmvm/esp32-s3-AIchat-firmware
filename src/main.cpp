@@ -15,10 +15,6 @@
 #include "../include/config.h"
 #include "../include/pins.h"
 
-#ifndef I2S_COMM_FORMAT_STAND_I2S
-#define I2S_COMM_FORMAT_STAND_I2S I2S_COMM_FORMAT_I2S
-#endif
-
 #ifndef RECORD_SEND_AFTER_FINISH_GUARD_MS
 #define RECORD_SEND_AFTER_FINISH_GUARD_MS 120
 #endif
@@ -51,6 +47,9 @@
 #define SEND_START_RECORD_METADATA true
 #endif
 
+static const char *FIRMWARE_VERSION = "v4.1.0-streaming-pipeline";
+static const size_t MAX_ANSWER_TEXT_BYTES = 4096;
+
 WebSocketsClient webSocket;
 HardwareSerial AsrSerial(1);
 U8G2_SH1106_128X64_NONAME_F_SW_I2C display(U8G2_R0, PIN_OLED_SCL, PIN_OLED_SDA, U8X8_PIN_NONE);
@@ -67,6 +66,7 @@ enum class DisplayMode {
   Listening,
   Thinking,
   AsrResult,
+  AnswerStreaming,
   AnswerMarquee,
   Error,
   Notice,
@@ -265,6 +265,43 @@ String cleanDisplayText(const String &text) {
   return cleaned;
 }
 
+String truncateUtf8Bytes(String text, size_t maxBytes) {
+  if (text.length() <= maxBytes) {
+    return text;
+  }
+
+  size_t cut = maxBytes;
+  while (cut > 0 && (static_cast<uint8_t>(text[cut]) & 0xC0) == 0x80) {
+    cut--;
+  }
+  text.remove(cut);
+  return text;
+}
+
+void updateMarqueeAnswerText() {
+  marqueeText = cleanDisplayText(lastAnswerText);
+  if (marqueeText.length() == 0) {
+    marqueeText = "无回答内容";
+  }
+  marqueeFinished = false;
+  displayDirty = true;
+  if (displayReady) {
+    display.setFont(u8g2_font_wqy12_t_gb2312);
+    marqueeTextWidth = display.getUTF8Width(marqueeText.c_str());
+  } else {
+    marqueeTextWidth = 0;
+  }
+}
+
+void appendAnswerDelta(const char *text) {
+  if (text == nullptr || text[0] == '\0' || lastAnswerText.length() >= MAX_ANSWER_TEXT_BYTES) {
+    return;
+  }
+
+  size_t remaining = MAX_ANSWER_TEXT_BYTES - lastAnswerText.length();
+  lastAnswerText += truncateUtf8Bytes(String(text), remaining);
+}
+
 void setDisplayMode(DisplayMode mode, const String &title = "", const String &body = "", const String &footer = "") {
   displayMode = mode;
   displayTitle = title;
@@ -330,9 +367,7 @@ void startAnswerMarquee(const String &text) {
   }
 
   lastAnswerText = cleaned;
-  marqueeText = cleaned;
   marqueeStartAt = millis();
-  marqueeFinished = false;
   displayMode = DisplayMode::AnswerMarquee;
   displayTitle = "";
   displayBody = cleaned;
@@ -340,12 +375,7 @@ void startAnswerMarquee(const String &text) {
   displayModeStartedAt = marqueeStartAt;
   displayDirty = true;
 
-  if (displayReady) {
-    display.setFont(u8g2_font_wqy12_t_gb2312);
-    marqueeTextWidth = display.getUTF8Width(marqueeText.c_str());
-  } else {
-    marqueeTextWidth = 0;
-  }
+  updateMarqueeAnswerText();
 
   Serial.printf("[display] answer marquee: %s\n", marqueeText.c_str());
 }
@@ -381,12 +411,13 @@ void updateDisplay(bool force = false) {
   }
 
   bool animated = displayMode == DisplayMode::AnswerMarquee;
+  bool frameLimited = animated || displayMode == DisplayMode::AnswerStreaming;
   bool clockDue = displayMode == DisplayMode::Idle && now - lastClockDisplayAt >= 1000;
   if (!force && !displayDirty && !animated && !clockDue) {
     return;
   }
 
-  if (!force && animated && now - lastDisplayFrameAt < DISPLAY_FRAME_MS) {
+  if (!force && frameLimited && now - lastDisplayFrameAt < DISPLAY_FRAME_MS) {
     return;
   }
 
@@ -406,6 +437,9 @@ void updateDisplay(bool force = false) {
       break;
     case DisplayMode::AsrResult:
       renderTextScreen("识别结果", displayBody);
+      break;
+    case DisplayMode::AnswerStreaming:
+      renderTextScreen("回答生成中", displayBody);
       break;
     case DisplayMode::AnswerMarquee: {
       unsigned long elapsed = now - marqueeStartAt;
@@ -433,7 +467,7 @@ void sendHelloJson() {
   JsonDocument doc;
   doc["type"] = "hello";
   doc["protocol"] = CLOUD_PROTOCOL_VERSION;
-  doc["firmware"] = "v4.0.0-realtime-foundation";
+  doc["firmware"] = FIRMWARE_VERSION;
   doc["device_id"] = DEVICE_ID;
   String payload;
   serializeJson(doc, payload);
@@ -467,7 +501,7 @@ void sendTurnStartJson() {
   JsonObject device = doc["device"].to<JsonObject>();
   device["id"] = DEVICE_ID;
   device["mic_channel"] = MIC_CHANNEL_LEFT ? "left" : "right";
-  device["firmware"] = "v4.0.0-realtime-foundation";
+  device["firmware"] = FIRMWARE_VERSION;
 #endif
   String payload;
   serializeJson(doc, payload);
@@ -557,7 +591,7 @@ void setupDisplay() {
 
   display.setPowerSave(0);
   display.setContrast(180);
-  setNoticeScreen("阶段四", "实时框架已加载", "SH1106 0x3C");
+  setNoticeScreen("阶段4.1", "流式对话已加载", "SH1106 0x3C");
   updateDisplay(true);
 }
 
@@ -779,6 +813,10 @@ void startRecordingNow() {
   stopPlaybackNow();
   i2s_zero_dma_buffer(I2S_NUM_0);
   resetAudioStats();
+  lastAnswerText = "";
+  marqueeText = "";
+  marqueeTextWidth = 0;
+  marqueeFinished = false;
   recordingStopRequested = false;
   currentTurnId++;
   sendTurnStartJson();
@@ -890,15 +928,28 @@ void handleCloudJson(const char *payload, size_t length) {
   } else if (strcmp(type, "asr_final") == 0 || strcmp(type, "asr_text") == 0) {
     state = DeviceState::Processing;
     setDisplayMode(DisplayMode::AsrResult, "", text);
+  } else if (strcmp(type, "answer_delta") == 0) {
+    appendAnswerDelta(text);
+    if (state == DeviceState::Playing && displayMode == DisplayMode::AnswerMarquee) {
+      updateMarqueeAnswerText();
+    } else {
+      state = DeviceState::Processing;
+      setDisplayMode(DisplayMode::AnswerStreaming, "", lastAnswerText);
+    }
   } else if (strcmp(type, "answer_text") == 0) {
-    state = DeviceState::Processing;
-    lastAnswerText = text;
-    answerAudioFinished = true;
-    marqueeFinished = false;
+    lastAnswerText = truncateUtf8Bytes(String(text), MAX_ANSWER_TEXT_BYTES);
+    if (state == DeviceState::Playing && displayMode == DisplayMode::AnswerMarquee) {
+      updateMarqueeAnswerText();
+    } else {
+      state = DeviceState::Processing;
+      answerAudioFinished = true;
+      marqueeFinished = false;
+      setDisplayMode(DisplayMode::AnswerStreaming, "", lastAnswerText);
+    }
   } else if (strcmp(type, "audio_start") == 0) {
     const char *answerText = doc["text"] | "";
-    if (strlen(answerText) > 0) {
-      lastAnswerText = answerText;
+    if (lastAnswerText.length() == 0 && strlen(answerText) > 0) {
+      lastAnswerText = truncateUtf8Bytes(String(answerText), MAX_ANSWER_TEXT_BYTES);
     }
     state = DeviceState::Playing;
     stopPlaybackNow();
@@ -1095,8 +1146,10 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("ESP32-S3 AI voice phase 4 realtime foundation");
+  Serial.printf("ESP32-S3 AI voice %s\n", FIRMWARE_VERSION);
   Serial.printf("Device ID: %s\n", DEVICE_ID);
+  lastAnswerText.reserve(MAX_ANSWER_TEXT_BYTES);
+  marqueeText.reserve(MAX_ANSWER_TEXT_BYTES);
 
   if (!validateConfig()) {
     Serial.println("Fix include/config.h, then flash again.");

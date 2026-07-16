@@ -1,6 +1,6 @@
-# 阶段四固件：实时协议、异步播放与语音打断
+# 阶段 4.1 固件：增量回答、异步播放与语音打断
 
-版本：`v4.0.0-realtime-foundation`，云端协议：`400`。
+版本：`v4.1.0-streaming-pipeline`，云端协议：`400`。
 
 本阶段解决固件里影响实时对话的两个核心问题：第一，播放 PCM 不再阻塞 WebSocket 回调；第二，每轮消息都有 `turn_id`，播放/处理中再次唤醒可以取消旧轮并立即开始新轮。
 
@@ -12,6 +12,9 @@
 - 使用 `turn_start` / `turn_end` 替代旧的 `start_record` / `finish_record`。
 - 每轮递增 `turn_id`，固件忽略带旧 turn ID 的延迟消息。
 - 支持 `asr_partial` 实时字幕、`asr_final` 最终识别文本。
+- 支持 `answer_delta`：完整回答生成前先在 OLED 显示增量文本。
+- `answer_text` 在播放中到达时只校准最终文本，不会把设备错误切回 `Processing` 或提前结束播放。
+- 回答文本最多保留 4096 UTF-8 字节，并在字符边界截断，防止异常服务端消息无限消耗堆内存。
 - 支持云端 `capture_stop`，由 Qwen server VAD 控制录音结束。
 - I2S 扬声器写入放到独立 FreeRTOS 任务；WebSocket 回调只复制数据到有界队列。
 - `audio_end` 作为队列结束标记，确保排队的 PCM 播完后再结束播放状态。
@@ -111,13 +114,13 @@ bash scripts/flash.sh
 WebSocket 连接后固件发送：
 
 ```json
-{"type":"hello","protocol":400,"firmware":"v4.0.0-realtime-foundation","device_id":"esp32-s3-voice-001"}
+{"type":"hello","protocol":400,"firmware":"v4.1.0-streaming-pipeline","device_id":"esp32-s3-voice-001"}
 ```
 
 串口应出现：
 
 ```text
-Cloud handshake protocol=400 version=v4.0.0-realtime-foundation
+Cloud handshake protocol=400 version=v4.1.0-streaming-pipeline
 ```
 
 ### 6.2 开始录音
@@ -125,7 +128,7 @@ Cloud handshake protocol=400 version=v4.0.0-realtime-foundation
 ASRPRO 输出 `WAKE\n` 后：
 
 ```json
-{"type":"turn_start","turn_id":1,"protocol":400,"audio":{"format":"pcm_s16le","sample_rate":16000,"channels":1,"chunk_ms":40},"device":{"id":"esp32-s3-voice-001","mic_channel":"left","firmware":"v4.0.0-realtime-foundation"}}
+{"type":"turn_start","turn_id":1,"protocol":400,"audio":{"format":"pcm_s16le","sample_rate":16000,"channels":1,"chunk_ms":40},"device":{"id":"esp32-s3-voice-001","mic_channel":"left","firmware":"v4.1.0-streaming-pipeline"}}
 ```
 
 固件随后每 40 ms 发送约 1280 字节 PCM。云端的 `turn_ready.realtime_asr=true` 表示本轮已接入 Qwen 实时 ASR；`false` 表示云端会使用批量识别回退。
@@ -152,9 +155,17 @@ OLED 使用“识别结果”页更新字幕。收到：
 
 如果云端实时 ASR 未配置，固件仍会在 `RECORD_MAX_MS` 到达时主动结束，云端也保留自己的本地 VAD。
 
-### 6.4 音频播放
+### 6.4 增量回答和音频播放
 
-云端先发 `audio_start`，再发送 PCM 二进制帧，最后发 `audio_end`。固件回调只入队；扬声器任务从队列取出并调用 `i2s_write`。结束标记排在所有 PCM 后面，因此不会出现收到 `audio_end` 就提前清空尾音的问题。
+ASR final 后，云端可连续发送：
+
+```json
+{"type":"answer_delta","turn_id":1,"text":"第一句话。"}
+```
+
+固件只追加当前 turn 的 delta，并在 OLED 显示“回答生成中”。第一句完成 TTS 后，云端发一次 `audio_start`，随后发送多句连续 PCM 二进制帧，最后发 `audio_end`。固件回调只入队；扬声器任务从队列取出并调用 `i2s_write`。结束标记排在所有 PCM 后面，因此不会出现收到 `audio_end` 就提前清空尾音的问题。
+
+完整 `answer_text` 可能在播放期间到达。固件此时更新滚动文字，但保持 `Playing` 和 `answerAudioFinished=false`，避免字幕滚动结束时误认为音频也已结束。
 
 播放队列容量有限，云端 v4 默认按 `TTS_PCM_CHUNK_MS=80` 实时节奏发送。若接入其他云端实现，不要把十几秒 PCM 瞬间全部推给设备。
 
@@ -176,6 +187,7 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> Recording: WAKE / turn_start
     Recording --> Processing: capture_stop 或 RECORD_MAX_MS
+    Processing --> Processing: answer_delta / OLED追加
     Processing --> Playing: audio_start
     Playing --> Idle: PCM队列结束 + 字幕滚动结束
     Processing --> Recording: WAKE / cancel旧turn / 新turn_start
@@ -194,7 +206,8 @@ stateDiagram-v2
 3. 说唤醒词，确认串口持续打印 `Sent PCM chunk`。
 4. OLED 在讲话过程中显示变化的局部识别文本。
 5. 停顿后约 400 ms，串口出现 `Finish recording: server_vad`。
-6. 回答音频完整播放，串口最终出现 `Playback queue drained`。
+6. OLED 在完整回答前出现“回答生成中”和增量文本。
+7. 第一完整句合成后开始播放，后续回答继续追加；串口最终出现 `Playback queue drained`。
 
 ### 8.2 打断测试
 
@@ -210,6 +223,7 @@ stateDiagram-v2
 - Qwen 配置错误：固件收到 `turn_ready.realtime_asr=false`，仍应完成批量识别。
 - 快速连续 `CANCEL`：不能崩溃，播放队列应保持为空。
 - 超长回答：不能出现 `Playback queue full`；出现时先检查云端是否按实时节奏发送。
+- 播放中收到最终 `answer_text`：不能切回“思考中”，不能提前停止当前 PCM。
 
 ## 9. 当前限制和下一步
 
